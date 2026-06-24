@@ -62,6 +62,11 @@ export default function App() {
   const [inputUrl, setInputUrl] = useState<string>('');
   const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
   
+  // Server-side transcode settings state
+  const [transcodeModal, setTranscodeModal] = useState<{ show: boolean; videoId: string; title: string } | null>(null);
+  const [transcodeFps, setTranscodeFps] = useState<number>(30);
+  const [transcodeRes, setTranscodeRes] = useState<string>('1280:720'); // Default to awesome 720p!
+
   // Cache download list
   const [cachedVideos, setCachedVideos] = useState<CachedVideo[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -265,25 +270,42 @@ export default function App() {
     }
   };
 
-  // Trigger server-side transcoding for weak machines (e.g. AMD E1-1200)
-  const handleServerTranscode = async (id: string, e: React.MouseEvent) => {
+  // Open the transcode options modal
+  const handleServerTranscode = (id: string, e: React.MouseEvent) => {
     e.stopPropagation(); // Avoid triggering play
+    const video = cachedVideos.find(v => v.id === id);
+    if (video) {
+      setTranscodeModal({
+        show: true,
+        videoId: id,
+        title: video.title
+      });
+    }
+  };
+
+  // Perform actual server-side transcoding with user-defined FPS and Scale
+  const startServerTranscode = async () => {
+    if (!transcodeModal) return;
+    const { videoId } = transcodeModal;
+    
+    setTranscodeModal(null); // Close modal
+    
     try {
       showNotification(
         lang === 'tr' 
-          ? 'Sunucuda dönüştürme başladı! Bilgisayarınız hiç yorulmaz.' 
-          : 'Transcoding started on the server! Your computer won\'t do any heavy decoding.', 
+          ? `Sunucuda dönüştürme başladı (${transcodeFps} FPS / ${transcodeRes.replace(':', 'x')}p)!` 
+          : `Transcoding started on server (${transcodeFps} FPS / ${transcodeRes.replace(':', 'x')}p)!`, 
         'info'
       );
 
-      const response = await fetch(`/api/videos/transcode/${id}`, {
+      const response = await fetch(`/api/videos/transcode/${videoId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          targetFps: 20, // 20 FPS is extremely easy to play and smooth enough
-          targetScale: "426:240" // 240p reduces decoded resolution dramatically
+          targetFps: transcodeFps,
+          targetScale: transcodeRes
         })
       });
 
@@ -444,6 +466,115 @@ export default function App() {
                   {lang === 'tr' ? 'Tamam' : 'OK'}
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Server-Side Transcode Options Modal */}
+      {transcodeModal && transcodeModal.show && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm transition-all duration-300 animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl flex flex-col gap-5 transform scale-100">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 rounded-xl bg-amber-500/10 text-amber-500 flex-shrink-0 border border-amber-500/20">
+                <Cpu className="w-6 h-6 animate-pulse" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-sm font-semibold text-slate-100 truncate">
+                  ⚡ {lang === 'tr' ? 'Sunucu Dönüştürme Seçenekleri' : 'Server Transcode Settings'}
+                </h3>
+                <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate" title={transcodeModal.title}>
+                  {transcodeModal.title}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed bg-slate-950/50 p-3 rounded-xl border border-slate-850">
+              {lang === 'tr' 
+                ? 'İşlemci gücü zayıf bilgisayarlar için videoyu Hugging Face sunucusunda (2 CPU, 16GB RAM) donmayan, ultra-hafif bir H.264 Baseline formatına dönüştürün. Sunucu tüm ağır işi yapar, bilgisayarınız ise videoyu pürüzsüzce oynatır.' 
+                : 'For computers with weak CPUs, transcode the video on the Hugging Face server (2 CPU, 16GB RAM) into an ultra-light H.264 Baseline format. The server handles all the hard work, while your computer plays it smoothly.'}
+            </p>
+
+            <div className="space-y-4">
+              {/* Target Quality / Resolution Selection */}
+              <div>
+                <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1 mb-2">
+                  <Settings className="w-3.5 h-3.5 text-indigo-400" />
+                  {lang === 'tr' ? 'Hedef Çözünürlük (Kalite)' : 'Target Resolution (Quality)'}
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                  {[
+                    { label: '240p', value: '426:240', desc: lang === 'tr' ? 'Donmayan en hafif' : 'Zero lag ultra-light' },
+                    { label: '360p', value: '640:360', desc: lang === 'tr' ? 'Eski PC için ideal' : 'Ideal for old PCs' },
+                    { label: '480p', value: '854:480', desc: lang === 'tr' ? 'Dengeli akıcılık' : 'Balanced smooth' },
+                    { label: '720p', value: '1280:720', desc: lang === 'tr' ? 'HD Net kalite' : 'Crisp HD quality' },
+                    { label: '1080p', value: '1920:1080', desc: lang === 'tr' ? 'Tam net çözünürlük' : 'Full HD crisp' }
+                  ].map((item) => (
+                    <button
+                      key={item.value}
+                      type="button"
+                      onClick={() => setTranscodeRes(item.value)}
+                      className={`p-2.5 rounded-xl border text-left flex flex-col justify-between transition-all cursor-pointer ${
+                        transcodeRes === item.value
+                          ? 'bg-indigo-600/20 border-indigo-500/50 text-white shadow-lg'
+                          : 'bg-slate-950 border-slate-850 text-slate-400 hover:border-slate-800 hover:text-slate-200'
+                      }`}
+                    >
+                      <span className="text-xs font-bold font-mono">{item.label}</span>
+                      <span className="text-[8px] text-slate-500 leading-tight mt-1">{item.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Target Framerate Selection */}
+              <div>
+                <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1 mb-2">
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                  {lang === 'tr' ? 'Hedef Saniyedeki Kare Sayısı (FPS)' : 'Target Frame Rate (FPS)'}
+                </label>
+                <div className="grid grid-cols-5 gap-2">
+                  {[
+                    { label: '15 FPS', value: 15, desc: lang === 'tr' ? 'Sıfır kasma' : 'Absolute zero lag' },
+                    { label: '20 FPS', value: 20, desc: lang === 'tr' ? 'Süper Tasarruf' : 'Super Eco' },
+                    { label: '24 FPS', value: 24, desc: lang === 'tr' ? 'Sinematik' : 'Cinematic' },
+                    { label: '30 FPS', value: 30, desc: lang === 'tr' ? 'Standart' : 'Standard' },
+                    { label: '60 FPS', value: 60, desc: lang === 'tr' ? 'Ultra Akıcı' : 'Ultra Smooth' }
+                  ].map((item) => (
+                    <button
+                      key={item.value}
+                      type="button"
+                      onClick={() => setTranscodeFps(item.value)}
+                      className={`p-2.5 rounded-xl border text-left flex flex-col justify-between transition-all cursor-pointer ${
+                        transcodeFps === item.value
+                          ? 'bg-indigo-600/20 border-indigo-500/50 text-white shadow-lg'
+                          : 'bg-slate-950 border-slate-850 text-slate-400 hover:border-slate-800 hover:text-slate-200'
+                      }`}
+                    >
+                      <span className="text-xs font-bold font-mono">{item.label}</span>
+                      <span className="text-[8px] text-slate-500 leading-tight mt-1">{item.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2.5 mt-2.5 pt-3 border-t border-slate-850">
+              <button
+                type="button"
+                onClick={() => setTranscodeModal(null)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-950 hover:bg-slate-800 text-slate-400 border border-slate-900 transition-colors cursor-pointer"
+              >
+                {lang === 'tr' ? 'Vazgeç' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={startServerTranscode}
+                className="px-5 py-2 rounded-xl text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white shadow-lg active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer"
+              >
+                <Cpu className="w-3.5 h-3.5" />
+                {lang === 'tr' ? 'Dönüştürmeyi Başlat' : 'Start Transcoding'}
+              </button>
             </div>
           </div>
         </div>

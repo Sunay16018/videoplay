@@ -32,6 +32,11 @@ function cleanYoutubeUrl(url: string): string {
       if (parts[1]) {
         videoId = parts[1].split("?")[0];
       }
+    } else if (url.includes("youtube.com/live/")) {
+      const parts = url.split("youtube.com/live/");
+      if (parts[1]) {
+        videoId = parts[1].split("?")[0];
+      }
     }
     
     if (videoId) {

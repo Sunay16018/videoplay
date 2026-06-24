@@ -13,6 +13,12 @@ export default function YoutubePlayer({ url, lang }: YoutubePlayerProps) {
 
   // Extract YouTube video ID
   const getYoutubeId = (urlStr: string): string | null => {
+    if (urlStr.includes('/live/')) {
+      const parts = urlStr.split('/live/');
+      if (parts[1]) {
+        return parts[1].split('?')[0].split('&')[0];
+      }
+    }
     const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
     const match = urlStr.match(regExp);
     return match && match[2].length === 11 ? match[2] : null;
