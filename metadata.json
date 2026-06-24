@@ -1,0 +1,6 @@
+{
+  "name": "Smooth Video Player",
+  "description": "A low-resource video player for playing local videos and YouTube links smoothly on low-performance PCs by adjusting FPS, resolution scaling, and stripping web clutter.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,736 @@
+import React, { useRef, useEffect, useState } from 'react';
+import { PlayerSettings, DiagnosticsData, Language } from '../types';
+import { translations } from '../utils/translations';
+import { 
+  Play, Pause, Volume2, VolumeX, SkipBack, 
+  RotateCcw, Sliders, Cpu, HardDrive, Maximize2, Minimize2
+} from 'lucide-react';
+
+interface CanvasPlayerProps {
+  file: File | string; // File object or direct URL
+  settings: PlayerSettings;
+  setSettings: React.Dispatch<React.SetStateAction<PlayerSettings>>;
+  lang: Language;
+  onUpdateDiagnostics: (data: DiagnosticsData) => void;
+}
+
+export default function CanvasPlayer({ 
+  file, 
+  settings, 
+  setSettings, 
+  lang, 
+  onUpdateDiagnostics 
+}: CanvasPlayerProps) {
+  const t = translations[lang];
+
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // UI state
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(settings.audioVolume);
+  const [isMuted, setIsMuted] = useState(false);
+  const [videoLoaded, setVideoLoaded] = useState(false);
+  const [videoError, setVideoError] = useState<string | null>(null);
+  const [isHovered, setIsHovered] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isControlsVisible, setIsControlsVisible] = useState(true);
+
+  // Keep a direct ref to settings for the animation loop to avoid dependency restarts
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    settingsRef.current = settings;
+    if (videoRef.current) {
+      videoRef.current.playbackRate = settings.playbackRate;
+    }
+  }, [settings]);
+
+  // Object URL for local files
+  const [videoSrc, setVideoSrc] = useState<string>('');
+
+  useEffect(() => {
+    let url = '';
+    if (file instanceof File) {
+      url = URL.createObjectURL(file);
+    } else if (typeof file === 'string') {
+      url = file;
+    }
+    setVideoSrc(url);
+    setVideoLoaded(false);
+    setIsPlaying(false);
+    setVideoError(null);
+
+    return () => {
+      if (file instanceof File && url) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, [file]);
+
+  // Canvas loop variables
+  const lastFrameTime = useRef<number>(0);
+  const frameCount = useRef<number>(0);
+  const lastFpsTime = useRef<number>(0);
+  const totalDroppedFrames = useRef<number>(0);
+  const expectedFrameTime = useRef<number>(0);
+  const animationFrameId = useRef<number | null>(null);
+
+  // Initialize playback rate whenever video loads
+  useEffect(() => {
+    if (videoRef.current && videoLoaded) {
+      videoRef.current.playbackRate = settings.playbackRate;
+    }
+  }, [videoLoaded, settings.playbackRate]);
+
+  // Canvas render loop
+  useEffect(() => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+
+    if (!video || !canvas || settings.mode !== 'canvas' || !isPlaying) {
+      if (animationFrameId.current) {
+        cancelAnimationFrame(animationFrameId.current);
+        animationFrameId.current = null;
+      }
+      return;
+    }
+
+    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+    if (!ctx) return;
+
+    // Track frame times
+    lastFrameTime.current = performance.now();
+    lastFpsTime.current = performance.now();
+    frameCount.current = 0;
+
+    const renderLoop = (now: number) => {
+      const currentSettings = settingsRef.current;
+      const targetFps = currentSettings.fpsLimit;
+      const fpsInterval = 1000 / targetFps;
+
+      const elapsed = now - lastFrameTime.current;
+
+      // Adjust canvas resolution dynamically
+      const targetWidth = Math.max(120, Math.floor(video.videoWidth * currentSettings.resolutionScale)) || 640;
+      const targetHeight = Math.max(90, Math.floor(video.videoHeight * currentSettings.resolutionScale)) || 360;
+
+      if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+      }
+
+      // Check if we should draw this frame
+      if (targetFps === 60 || elapsed >= fpsInterval) {
+        // Drop frames if elapsed is way behind (CPU is lagging)
+        if (targetFps !== 60 && elapsed > fpsInterval * 2) {
+          const missedFrames = Math.floor(elapsed / fpsInterval) - 1;
+          totalDroppedFrames.current += Math.max(0, missedFrames);
+        }
+
+        // Save last frame time
+        lastFrameTime.current = now - (targetFps === 60 ? 0 : elapsed % fpsInterval);
+
+        // Draw video frame to scaled canvas
+        try {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          frameCount.current++;
+        } catch (e) {
+          // Video frame might not be ready
+        }
+      }
+
+      // Calculate actual output FPS every second
+      const fpsElapsed = now - lastFpsTime.current;
+      if (fpsElapsed >= 1000) {
+        const actualFps = (frameCount.current * 1000) / fpsElapsed;
+        
+        // Estimate CPU load based on target vs actual FPS
+        let cpuLoad: 'Low' | 'Medium' | 'High' = 'Low';
+        const expectedFps = Math.min(targetFps, 30);
+        if (actualFps < expectedFps * 0.6) {
+          cpuLoad = 'High';
+        } else if (actualFps < expectedFps * 0.85) {
+          cpuLoad = 'Medium';
+        }
+
+        onUpdateDiagnostics({
+          fps: actualFps,
+          droppedFrames: totalDroppedFrames.current,
+          renderedFrames: frameCount.current,
+          cpuLoadEstimate: cpuLoad,
+          canvasWidth: canvas.width,
+          canvasHeight: canvas.height,
+        });
+
+        frameCount.current = 0;
+        lastFpsTime.current = now;
+      }
+
+      animationFrameId.current = requestAnimationFrame(renderLoop);
+    };
+
+    animationFrameId.current = requestAnimationFrame(renderLoop);
+
+    return () => {
+      if (animationFrameId.current) {
+        cancelAnimationFrame(animationFrameId.current);
+        animationFrameId.current = null;
+      }
+    };
+  }, [isPlaying, settings.mode, videoLoaded]);
+
+  // Helper to draw a single frame to the canvas when paused/seeking
+  const drawSingleFrame = () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (video && canvas && settings.mode === 'canvas') {
+      const currentSettings = settingsRef.current;
+      const targetWidth = Math.max(120, Math.floor(video.videoWidth * currentSettings.resolutionScale)) || 640;
+      const targetHeight = Math.max(90, Math.floor(video.videoHeight * currentSettings.resolutionScale)) || 360;
+
+      if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+      }
+
+      const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+      if (ctx) {
+        try {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        } catch (_) {}
+      }
+    }
+  };
+
+  // Draw single frame on load or settings switch while paused
+  useEffect(() => {
+    if (videoLoaded && settings.mode === 'canvas' && !isPlaying) {
+      const timer = setTimeout(() => {
+        drawSingleFrame();
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [videoLoaded, settings.mode, videoSrc, isPlaying]);
+
+  // Update time tracker on native video ticks
+  const handleTimeUpdate = () => {
+    if (videoRef.current) {
+      setCurrentTime(videoRef.current.currentTime);
+    }
+  };
+
+  const handleLoadedMetadata = () => {
+    if (videoRef.current) {
+      setDuration(videoRef.current.duration);
+      setVideoLoaded(true);
+
+      // Trigger initial diagnostic info
+      onUpdateDiagnostics({
+        fps: 0,
+        droppedFrames: 0,
+        renderedFrames: 0,
+        cpuLoadEstimate: 'Low',
+        canvasWidth: videoRef.current.videoWidth,
+        canvasHeight: videoRef.current.videoHeight,
+      });
+    }
+  };
+
+  const togglePlay = () => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (isPlaying) {
+      video.pause();
+      setIsPlaying(false);
+    } else {
+      video.play()
+        .then(() => setIsPlaying(true))
+        .catch(err => {
+          setVideoError(lang === 'tr' ? 'Oynatılamadı. Format desteklenmiyor olabilir.' : 'Failed to play. Video format might not be supported.');
+        });
+    }
+  };
+
+  const handleScrub = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const newTime = parseFloat(e.target.value);
+    video.currentTime = newTime;
+    setCurrentTime(newTime);
+
+    // If in canvas mode and paused, draw a single frame immediately on seeking
+    if (settings.mode === 'canvas' && !isPlaying) {
+      setTimeout(() => {
+        drawSingleFrame();
+      }, 50);
+    }
+  };
+
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const val = parseFloat(e.target.value);
+    video.volume = val;
+    setVolume(val);
+    setIsMuted(val === 0);
+    setSettings(prev => ({ ...prev, audioVolume: val }));
+  };
+
+  const toggleMute = () => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (isMuted) {
+      video.volume = volume === 0 ? 0.5 : volume;
+      if (volume === 0) setVolume(0.5);
+      setIsMuted(false);
+    } else {
+      video.volume = 0;
+      setIsMuted(true);
+    }
+  };
+
+  const formatTime = (timeInSeconds: number) => {
+    if (isNaN(timeInSeconds)) return '00:00';
+    const minutes = Math.floor(timeInSeconds / 60);
+    const seconds = Math.floor(timeInSeconds % 60);
+    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  };
+
+  const skipRelative = (sec: number) => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = Math.max(0, Math.min(duration, videoRef.current.currentTime + sec));
+    }
+  };
+
+  const toggleFullscreen = () => {
+    const container = document.getElementById('video-player-container');
+    if (!container) return;
+
+    if (!document.fullscreenElement) {
+      container.requestFullscreen()
+        .then(() => setIsFullscreen(true))
+        .catch(err => {
+          console.error("Error attempting to enable full-screen mode:", err);
+        });
+    } else {
+      document.exitFullscreen()
+        .then(() => setIsFullscreen(false))
+        .catch(err => {
+          console.error("Error attempting to exit full-screen mode:", err);
+        });
+    }
+  };
+
+  // Setup fullscreen change listener
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, []);
+
+  // Keyboard shortcut listener
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept shortcuts if typing in any input fields
+      const activeEl = document.activeElement;
+      if (activeEl && (
+        activeEl.tagName === 'INPUT' || 
+        activeEl.tagName === 'TEXTAREA' || 
+        activeEl.getAttribute('contenteditable') === 'true'
+      )) {
+        return;
+      }
+
+      switch (e.key.toLowerCase()) {
+        case ' ':
+          e.preventDefault();
+          togglePlay();
+          break;
+        case 'f':
+          e.preventDefault();
+          toggleFullscreen();
+          break;
+        case 'm':
+          e.preventDefault();
+          toggleMute();
+          break;
+        case 'arrowleft':
+          e.preventDefault();
+          skipRelative(-10);
+          break;
+        case 'arrowright':
+          e.preventDefault();
+          skipRelative(10);
+          break;
+        case 'arrowup':
+          e.preventDefault();
+          if (videoRef.current) {
+            const nextVol = Math.min(1, videoRef.current.volume + 0.1);
+            videoRef.current.volume = nextVol;
+            setVolume(nextVol);
+            setIsMuted(nextVol === 0);
+            setSettings(prev => ({ ...prev, audioVolume: nextVol }));
+          }
+          break;
+        case 'arrowdown':
+          e.preventDefault();
+          if (videoRef.current) {
+            const nextVol = Math.max(0, videoRef.current.volume - 0.1);
+            videoRef.current.volume = nextVol;
+            setVolume(nextVol);
+            setIsMuted(nextVol === 0);
+            setSettings(prev => ({ ...prev, audioVolume: nextVol }));
+          }
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isPlaying, isMuted, volume, duration]);
+
+  // Hide controls in fullscreen after inactivity when playing
+  useEffect(() => {
+    let timeoutId: number;
+
+    const handleMouseMove = () => {
+      setIsControlsVisible(true);
+      const container = document.getElementById('video-player-container');
+      if (container) {
+        container.style.cursor = 'default';
+      }
+
+      if (isPlaying) {
+        clearTimeout(timeoutId);
+        timeoutId = window.setTimeout(() => {
+          if (isPlaying) {
+            setIsControlsVisible(false);
+            if (document.fullscreenElement && container) {
+              container.style.cursor = 'none';
+            }
+          }
+        }, 2000);
+      }
+    };
+
+    const container = document.getElementById('video-player-container');
+    if (isPlaying && container) {
+      container.addEventListener('mousemove', handleMouseMove);
+      handleMouseMove(); // Trigger first time
+    } else {
+      setIsControlsVisible(true);
+      if (container) {
+        container.style.cursor = 'default';
+      }
+    }
+
+    return () => {
+      if (container) {
+        container.removeEventListener('mousemove', handleMouseMove);
+        container.style.cursor = 'default';
+      }
+      clearTimeout(timeoutId);
+    };
+  }, [isPlaying, isFullscreen]);
+
+  return (
+    <div className="flex flex-col gap-6">
+      {/* Video Viewport Container */}
+      <div 
+        id="video-player-container"
+        className="relative aspect-video w-full bg-slate-950 rounded-2xl overflow-hidden border border-slate-800/80 shadow-2xl group flex items-center justify-center cursor-pointer"
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        onClick={(e) => {
+          // Only toggle play if clicking outside the control bar
+          const controls = document.getElementById('player-controls-overlay');
+          if (controls && !controls.contains(e.target as Node)) {
+            togglePlay();
+          }
+        }}
+        onDoubleClick={(e) => {
+          const controls = document.getElementById('player-controls-overlay');
+          if (controls && !controls.contains(e.target as Node)) {
+            toggleFullscreen();
+          }
+        }}
+      >
+        {/* Hidden video element for Canvas rendering, or visible for native rendering */}
+        <video
+          ref={videoRef}
+          src={videoSrc || undefined}
+          className={settings.mode === 'canvas' ? 'absolute inset-0 w-full h-full opacity-0 pointer-events-none' : 'w-full h-full object-contain block'}
+          onTimeUpdate={handleTimeUpdate}
+          onLoadedMetadata={handleLoadedMetadata}
+          onError={() => {
+            if (videoSrc) {
+              setVideoError(lang === 'tr' ? 'Video formatı bu tarayıcıda açılamıyor.' : 'Video format is not supported by this browser.');
+            }
+          }}
+          playsInline
+        />
+
+        {/* Visible Canvas element for customized downscaled/capped rendering */}
+        {settings.mode === 'canvas' && (
+          <canvas
+            ref={canvasRef}
+            className="w-full h-full object-contain bg-slate-950"
+          />
+        )}
+
+        {/* Initial loading screen */}
+        {!videoLoaded && !videoError && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950 text-slate-300">
+            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-400 mb-3" />
+            <p className="text-xs font-mono">{t.loading}</p>
+          </div>
+        )}
+
+        {/* Error overlay */}
+        {videoError && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-center px-4">
+            <div className="bg-rose-500/10 p-3 rounded-full border border-rose-500/20 text-rose-400 mb-3">
+              <RotateCcw className="w-6 h-6 animate-spin-reverse" />
+            </div>
+            <p className="text-sm font-sans font-medium text-rose-400">{videoError}</p>
+          </div>
+        )}
+
+        {/* Video Controls Overlay (Fade in on hover or when paused or controls are active) */}
+        <div 
+          id="player-controls-overlay"
+          className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-slate-950/95 via-slate-950/80 to-transparent p-5 pt-12 transition-all duration-300 flex flex-col gap-3 z-10 ${
+            isHovered || !isPlaying || isControlsVisible ? 'opacity-100 translate-y-0 pointer-events-auto' : 'opacity-0 translate-y-2 pointer-events-none'
+          }`}
+        >
+          {/* Progress Bar (Scrubbing) */}
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] text-slate-300 font-mono w-10 text-right">
+              {formatTime(currentTime)}
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={duration || 100}
+              step={0.1}
+              value={currentTime}
+              onChange={handleScrub}
+              className="flex-1 accent-indigo-500 h-1 bg-slate-800 rounded-full cursor-pointer appearance-none outline-none focus:ring-1 focus:ring-indigo-400"
+            />
+            <span className="text-[10px] text-slate-300 font-mono w-10 text-left">
+              {formatTime(duration)}
+            </span>
+          </div>
+
+          {/* Controls Bar */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              {/* Play/Pause Button */}
+              <button
+                type="button"
+                onClick={togglePlay}
+                disabled={!videoLoaded || !!videoError}
+                className="w-10 h-10 flex items-center justify-center rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isPlaying ? <Pause className="w-4 h-4 fill-white" /> : <Play className="w-4 h-4 fill-white ml-0.5" />}
+              </button>
+
+              {/* Skip Back 10s */}
+              <button
+                type="button"
+                onClick={() => skipRelative(-10)}
+                disabled={!videoLoaded || !!videoError}
+                className="p-2 text-slate-300 hover:text-white hover:bg-slate-900/60 rounded-lg transition-colors"
+                title="10s Back"
+              >
+                <SkipBack className="w-4 h-4" />
+              </button>
+
+              {/* Volume Controller */}
+              <div className="flex items-center gap-1.5 ml-2">
+                <button
+                  type="button"
+                  onClick={toggleMute}
+                  className="p-2 text-slate-300 hover:text-white hover:bg-slate-900/60 rounded-lg transition-colors"
+                >
+                  {isMuted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4" />}
+                </button>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={isMuted ? 0 : volume}
+                  onChange={handleVolumeChange}
+                  className="w-16 accent-slate-300 h-1 bg-slate-800 rounded-full cursor-pointer appearance-none outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Playback speed indicators & Fullscreen toggle */}
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-slate-400 font-mono bg-slate-900/80 px-2 py-1 rounded-md border border-slate-800">
+                {settings.playbackRate}x
+              </span>
+
+              {/* Fullscreen Button */}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleFullscreen();
+                }}
+                className="p-2 text-slate-300 hover:text-white hover:bg-slate-900/60 rounded-lg transition-colors"
+                title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
+              >
+                {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Speed Selector & Advanced Mode toggles */}
+      <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-5 shadow-lg">
+        <h3 className="text-sm font-display font-semibold text-slate-200 mb-4 flex items-center gap-2">
+          <Sliders className="w-4 h-4 text-indigo-400" />
+          {t.settingsTitle}
+        </h3>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Section 1: Mode Picker */}
+          <div className="flex flex-col gap-3">
+            <label className="text-xs font-semibold text-slate-300 tracking-wide uppercase">
+              {t.playerMode}
+            </label>
+            <div className="grid grid-cols-2 gap-2 bg-slate-950 p-1 rounded-xl border border-slate-800">
+              <button
+                type="button"
+                onClick={() => setSettings(prev => ({ ...prev, mode: 'native' }))}
+                className={`py-2 px-3 text-xs font-medium rounded-lg transition-all ${
+                  settings.mode === 'native' 
+                    ? 'bg-indigo-600/10 text-indigo-400 border border-indigo-500/20 shadow-sm' 
+                    : 'text-slate-400 border border-transparent hover:text-slate-200'
+                }`}
+              >
+                {t.nativeMode}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSettings(prev => ({ ...prev, mode: 'canvas' }))}
+                className={`py-2 px-3 text-xs font-medium rounded-lg transition-all ${
+                  settings.mode === 'canvas' 
+                    ? 'bg-indigo-600/15 text-indigo-400 border border-indigo-500/30 shadow-sm' 
+                    : 'text-slate-400 border border-transparent hover:text-slate-200'
+                }`}
+              >
+                🚀 {t.canvasMode}
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed mt-1">
+              {settings.mode === 'canvas' ? t.canvasDesc : t.nativeDesc}
+            </p>
+          </div>
+
+          {/* Section 2: Canvas settings (Visible only in canvas mode) */}
+          <div className={`flex flex-col gap-4 transition-all duration-300 ${settings.mode === 'canvas' ? 'opacity-100 pointer-events-auto' : 'opacity-40 pointer-events-none'}`}>
+            {/* FPS Selector */}
+            <div className="flex flex-col gap-2">
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-semibold text-slate-300 uppercase tracking-wide">
+                  {t.fpsLimitLabel}
+                </span>
+                <span className="text-xs font-mono font-bold text-indigo-400">
+                  {settings.fpsLimit === 60 ? t.fpsUncapped : `${settings.fpsLimit} FPS`}
+                </span>
+              </div>
+              <div className="flex gap-1.5 bg-slate-950 p-1 rounded-lg border border-slate-800">
+                {[15, 20, 24, 30, 60].map((fps) => (
+                  <button
+                    key={fps}
+                    type="button"
+                    onClick={() => setSettings(prev => ({ ...prev, fpsLimit: fps }))}
+                    className={`flex-1 py-1.5 rounded-md text-[10px] font-mono font-bold transition-colors ${
+                      settings.fpsLimit === fps 
+                        ? 'bg-indigo-600 text-white' 
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                    }`}
+                  >
+                    {fps === 60 ? 'MAX' : fps}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Scale Selector */}
+            <div className="flex flex-col gap-2">
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-semibold text-slate-300 uppercase tracking-wide">
+                  {t.resScaleLabel}
+                </span>
+                <span className="text-xs font-mono font-bold text-indigo-400">
+                  {settings.resolutionScale * 100}%
+                </span>
+              </div>
+              <div className="flex gap-1.5 bg-slate-950 p-1 rounded-lg border border-slate-800">
+                {[0.25, 0.5, 0.75, 1.0].map((scale) => (
+                  <button
+                    key={scale}
+                    type="button"
+                    onClick={() => setSettings(prev => ({ ...prev, resolutionScale: scale }))}
+                    className={`flex-1 py-1.5 rounded-md text-[10px] font-mono font-bold transition-colors ${
+                      settings.resolutionScale === scale 
+                        ? 'bg-indigo-600 text-white' 
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                    }`}
+                  >
+                    {scale * 100}%
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-slate-500 font-sans">
+                {settings.resolutionScale === 0.25 ? `✨ ${t.resLow}` : settings.resolutionScale === 0.5 ? t.resMedium : settings.resolutionScale === 1.0 ? t.resOriginal : t.resHigh}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Playback rate control */}
+        <div className="mt-5 pt-4 border-t border-slate-800/80 flex items-center justify-between">
+          <span className="text-xs font-semibold text-slate-300 uppercase tracking-wide">
+            {t.playbackSpeed}
+          </span>
+          <div className="flex gap-2">
+            {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((rate) => (
+              <button
+                key={rate}
+                type="button"
+                onClick={() => setSettings(prev => ({ ...prev, playbackRate: rate }))}
+                className={`px-3 py-1 text-[11px] font-mono rounded-lg border transition-colors ${
+                  settings.playbackRate === rate 
+                    ? 'bg-indigo-600 text-white border-indigo-500' 
+                    : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
+                }`}
+              >
+                {rate}x
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
