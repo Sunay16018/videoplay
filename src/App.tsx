@@ -76,10 +76,10 @@ export default function App() {
 
   // Player settings state
   const [settings, setSettings] = useState<PlayerSettings>({
-    fpsLimit: 24, // Optimized default FPS limit (film standard, 24fps)
-    resolutionScale: 0.5, // Optimized default downsampling (50% scale)
+    fpsLimit: 30, // Default to standard 30 FPS
+    resolutionScale: 1.0, // Default to full resolution
     playbackRate: 1.0,
-    mode: 'canvas', // Default to performance canvas mode!
+    mode: 'native', // Default to smooth, hardware-accelerated native mode!
     audioVolume: 0.8
   });
 
@@ -181,6 +181,23 @@ export default function App() {
     }
   };
 
+  // Handle direct instant playback for live streams or public URLs
+  const handleInstantPlay = () => {
+    const url = inputUrl.trim();
+    if (!url) return;
+
+    setVideoSource(url);
+    setActiveVideoId('');
+    setInputUrl('');
+    
+    showNotification(
+      lang === 'tr' 
+        ? 'Doğrudan akış başlatıldı! (Canlı Yayınlar ve m3u8 formatları desteklenir)' 
+        : 'Direct stream playback started! (Live streams and m3u8 formats are supported)', 
+      'success'
+    );
+  };
+
   // Play a specific video from the cached downloads list
   const handlePlayCachedVideo = (id: string, directVideo?: CachedVideo) => {
     const video = directVideo || cachedVideos.find(v => v.id === id);
@@ -245,6 +262,40 @@ export default function App() {
       }
     } catch (err) {
       console.error('Failed to delete video:', err);
+    }
+  };
+
+  // Trigger server-side transcoding for weak machines (e.g. AMD E1-1200)
+  const handleServerTranscode = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation(); // Avoid triggering play
+    try {
+      showNotification(
+        lang === 'tr' 
+          ? 'Sunucuda dönüştürme başladı! Bilgisayarınız hiç yorulmaz.' 
+          : 'Transcoding started on the server! Your computer won\'t do any heavy decoding.', 
+        'info'
+      );
+
+      const response = await fetch(`/api/videos/transcode/${id}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          targetFps: 20, // 20 FPS is extremely easy to play and smooth enough
+          targetScale: "426:240" // 240p reduces decoded resolution dramatically
+        })
+      });
+
+      if (response.ok) {
+        fetchCachedVideos();
+      } else {
+        const errData = await response.json();
+        showNotification(errData.error || 'Transcode request failed', 'error');
+      }
+    } catch (err: any) {
+      console.error('Failed to start server transcode:', err);
+      showNotification(err.message || 'Transcoding failed to start', 'error');
     }
   };
 
@@ -614,13 +665,24 @@ export default function App() {
                     type="submit"
                     disabled={!inputUrl.trim() || isSubmitting}
                     className="bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40 disabled:cursor-not-allowed font-semibold px-3 py-2 rounded-xl text-xs transition-colors flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
+                    title={lang === 'tr' ? 'Videoyu Hugging Face sunucusuna indirir ve önbellekten donmadan oynatır.' : 'Downloads the video to the Hugging Face server and streams it from local cache.'}
                   >
                     {isSubmitting ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     ) : (
                       <Play className="w-3.5 h-3.5 fill-current" />
                     )}
-                    {t.playButton}
+                    {lang === 'tr' ? 'İndir ve İzle' : 'Download & Watch'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleInstantPlay}
+                    disabled={!inputUrl.trim() || isSubmitting}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40 disabled:cursor-not-allowed font-semibold px-3 py-2 rounded-xl text-xs transition-colors flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
+                    title={lang === 'tr' ? 'Canlı yayınları (.m3u8) veya doğrudan video linklerini sunucuya indirmeden anında oynatır.' : 'Plays live streams (.m3u8) or direct video links instantly without downloading first.'}
+                  >
+                    <MonitorPlay className="w-3.5 h-3.5" />
+                    {lang === 'tr' ? 'Anında / Canlı' : 'Instant / Live'}
                   </button>
                 </div>
 
@@ -783,7 +845,7 @@ export default function App() {
                             </h4>
                             
                             {/* Status label / stats */}
-                            <div className="flex items-center gap-1.5 mt-1">
+                            <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                               {video.status === 'downloading' ? (
                                 <span className="text-[9px] text-indigo-400 font-semibold flex items-center gap-1 font-mono">
                                   {video.progress}% {t.statusDownloading}
@@ -795,6 +857,19 @@ export default function App() {
                               ) : (
                                 <span className="text-[9px] text-rose-400 font-semibold font-mono">
                                   ⚠ {lang === 'tr' ? 'Hata' : 'Failed'}
+                                </span>
+                              )}
+
+                              {video.isTranscoded && (
+                                <span className="text-[9px] text-amber-400 font-semibold bg-amber-500/15 px-1 py-0.5 rounded flex items-center gap-0.5 font-mono">
+                                  ⚡ {lang === 'tr' ? 'CPU Tasarrufu' : 'CPU Saver'}
+                                </span>
+                              )}
+
+                              {video.transcodeStatus === 'processing' && (
+                                <span className="text-[9px] text-amber-400 font-semibold flex items-center gap-1 font-mono">
+                                  • ⚡ {lang === 'tr' ? `Dönüştürülüyor (${video.transcodeProgress}%)` : `Transcoding (${video.transcodeProgress}%)`}
+                                  <Loader2 className="w-2.5 h-2.5 animate-spin text-amber-400" />
                                 </span>
                               )}
                               
@@ -819,6 +894,17 @@ export default function App() {
 
                         {/* Interactive control buttons */}
                         <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+                          {/* Server-side transcode button */}
+                          {video.status === 'completed' && !video.isTranscoded && video.transcodeStatus !== 'processing' && (
+                            <button
+                              onClick={(e) => handleServerTranscode(video.id, e)}
+                              className="p-1 rounded-lg bg-slate-900 hover:bg-amber-950/40 text-amber-500 hover:text-amber-400 border border-slate-800 hover:border-amber-900/40 transition-all cursor-pointer"
+                              title={lang === 'tr' ? 'Videoyu sunucu üzerinde donmayan 240p Baseline formatına dönüştürür (Zayıf bilgisayarlar için).' : 'Transcodes video on the server to 240p Baseline format (extremely light on CPU).'}
+                            >
+                              <Cpu className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
                           {/* Play Button Overlay */}
                           <button
                             onClick={(e) => {

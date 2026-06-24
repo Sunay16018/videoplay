@@ -1,6 +1,9 @@
 # Use a lightweight Node.js 20 image
 FROM node:20-slim
 
+# Install ffmpeg and system dependencies for server-side video processing
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+
 # Set working directory
 WORKDIR /app
 

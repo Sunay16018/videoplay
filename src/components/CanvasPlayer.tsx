@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
+import Hls from 'hls.js';
 import { PlayerSettings, DiagnosticsData, Language } from '../types';
 import { translations } from '../utils/translations';
 import { 
@@ -68,6 +69,62 @@ export default function CanvasPlayer({
       }
     };
   }, [file]);
+
+  const hlsRef = useRef<Hls | null>(null);
+
+  // Handle HLS live stream initialization
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+
+    if (videoSrc && (videoSrc.includes('.m3u8') || videoSrc.includes('m3u8'))) {
+      if (Hls.isSupported()) {
+        const hls = new Hls({
+          maxMaxBufferLength: 10, // Optimized buffering limit for low-end machines
+          enableWorker: true,
+          lowLatencyMode: true,
+        });
+        hls.loadSource(videoSrc);
+        hls.attachMedia(video);
+        hlsRef.current = hls;
+
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          setVideoLoaded(true);
+        });
+
+        hls.on(Hls.Events.ERROR, (event, data) => {
+          if (data.fatal) {
+            switch (data.type) {
+              case Hls.ErrorTypes.NETWORK_ERROR:
+                hls.startLoad();
+                break;
+              case Hls.ErrorTypes.MEDIA_ERROR:
+                hls.recoverMediaError();
+                break;
+              default:
+                setVideoError(lang === 'tr' ? 'Canlı yayın yüklenirken hata oluştu.' : 'Failed to load live stream.');
+                break;
+            }
+          }
+        });
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = videoSrc;
+        video.addEventListener('loadedmetadata', handleLoadedMetadata);
+      }
+    }
+
+    return () => {
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+    };
+  }, [videoSrc]);
 
   // Canvas loop variables
   const lastFrameTime = useRef<number>(0);
@@ -471,12 +528,12 @@ export default function CanvasPlayer({
         {/* Hidden video element for Canvas rendering, or visible for native rendering */}
         <video
           ref={videoRef}
-          src={videoSrc || undefined}
+          src={videoSrc && (videoSrc.includes('.m3u8') || videoSrc.includes('m3u8')) ? undefined : (videoSrc || undefined)}
           className={settings.mode === 'canvas' ? 'absolute inset-0 w-full h-full opacity-0 pointer-events-none' : 'w-full h-full object-contain block'}
           onTimeUpdate={handleTimeUpdate}
           onLoadedMetadata={handleLoadedMetadata}
           onError={() => {
-            if (videoSrc) {
+            if (videoSrc && !(videoSrc.includes('.m3u8') || videoSrc.includes('m3u8'))) {
               setVideoError(lang === 'tr' ? 'Video formatı bu tarayıcıda açılamıyor.' : 'Video format is not supported by this browser.');
             }
           }}

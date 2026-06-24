@@ -31,4 +31,8 @@ export interface CachedVideo {
   quality: string;
   error?: string;
   addedAt: number;
+  isTranscoded?: boolean;
+  transcodeStatus?: 'idle' | 'processing' | 'completed' | 'failed';
+  transcodeProgress?: number;
+  originalSize?: number;
 }

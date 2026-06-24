@@ -57,6 +57,10 @@ interface CachedVideo {
   quality: string;
   error?: string;
   addedAt: number;
+  isTranscoded?: boolean;
+  transcodeStatus?: 'idle' | 'processing' | 'completed' | 'failed';
+  transcodeProgress?: number;
+  originalSize?: number;
 }
 
 async function startServer() {
@@ -446,6 +450,16 @@ async function startServer() {
       }
     }
 
+    // Delete transcoded file if it exists
+    const transcodedPath = path.join(DOWNLOADS_DIR, `${id}-transcoded.mp4`);
+    if (fs.existsSync(transcodedPath)) {
+      try {
+        fs.unlinkSync(transcodedPath);
+      } catch (e) {
+        console.error(`Could not delete transcoded file ${transcodedPath}:`, e);
+      }
+    }
+
     // Remove from metadata list
     if (metadata[id]) {
       delete metadata[id];
@@ -455,10 +469,125 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  // 3b. POST - Transcode downloaded video to super low-overhead Baseline MP4 (Server-side E1-1200 CPU Saver Mode)
+  app.post("/api/videos/transcode/:id", (req, res) => {
+    const { id } = req.params;
+    const { targetFps = 20, targetScale = "426:240" } = req.body;
+
+    const metadata = loadMetadata();
+    const video = metadata[id];
+
+    if (!video) {
+      return res.status(404).json({ error: "Video metadata not found" });
+    }
+
+    const inputPath = path.join(DOWNLOADS_DIR, `${id}.mp4`);
+    const outputPath = path.join(DOWNLOADS_DIR, `${id}-transcoded.mp4`);
+
+    if (!fs.existsSync(inputPath)) {
+      return res.status(404).json({ error: "Source video file not found in local cache. Please download it first." });
+    }
+
+    if (video.transcodeStatus === "processing") {
+      return res.json({ message: "Transcoding is already in progress.", video });
+    }
+
+    video.transcodeStatus = "processing";
+    video.transcodeProgress = 0;
+    metadata[id] = video;
+    saveMetadata(metadata);
+
+    res.json({ message: "Transcoding started on server.", video });
+
+    // Use spawn to launch ffmpeg in background
+    const { spawn } = require("child_process");
+    const ffmpegArgs = [
+      "-y",
+      "-i", inputPath,
+      "-vf", `scale=${targetScale},fps=${targetFps}`,
+      "-c:v", "libx264",
+      "-profile:v", "baseline",
+      "-level", "3.0",
+      "-preset", "ultrafast",
+      "-tune", "fastdecode",
+      "-pix_fmt", "yuv420p",
+      "-b:v", "200k",
+      "-c:a", "aac",
+      "-b:a", "64k",
+      "-ac", "2",
+      outputPath
+    ];
+
+    console.log(`[FFmpeg Server Transcode] Starting for id: ${id}, args: ${ffmpegArgs.join(" ")}`);
+    const ffmpeg = spawn("ffmpeg", ffmpegArgs);
+
+    let duration = 0;
+
+    ffmpeg.stderr.on("data", (data: Buffer) => {
+      const line = data.toString();
+      
+      // Parse duration to estimate progress
+      if (line.includes("Duration:")) {
+        const match = line.match(/Duration: (\d{2}):(\d{2}):(\d{2})/);
+        if (match) {
+          duration = parseInt(match[1], 10) * 3600 + parseInt(match[2], 10) * 60 + parseInt(match[3], 10);
+        }
+      }
+      
+      // Parse current time to calculate progress
+      if (line.includes("time=")) {
+        const match = line.match(/time=(\d{2}):(\d{2}):(\d{2})/);
+        if (match && duration > 0) {
+          const currentTime = parseInt(match[1], 10) * 3600 + parseInt(match[2], 10) * 60 + parseInt(match[3], 10);
+          const progress = Math.min(99, Math.round((currentTime / duration) * 100));
+          
+          const currentMeta = loadMetadata();
+          if (currentMeta[id] && currentMeta[id].transcodeStatus === "processing") {
+            currentMeta[id].transcodeProgress = progress;
+            saveMetadata(currentMeta);
+          }
+        }
+      }
+    });
+
+    ffmpeg.on("close", (code: number) => {
+      const currentMeta = loadMetadata();
+      if (!currentMeta[id]) return;
+
+      if (code === 0 && fs.existsSync(outputPath)) {
+        console.log(`[FFmpeg Server Transcode] Completed successfully for video ${id}`);
+        currentMeta[id].transcodeStatus = "completed";
+        currentMeta[id].transcodeProgress = 100;
+        currentMeta[id].isTranscoded = true;
+
+        const stat = fs.statSync(outputPath);
+        currentMeta[id].originalSize = currentMeta[id].totalSize || currentMeta[id].downloadedSize;
+        currentMeta[id].downloadedSize = stat.size;
+        currentMeta[id].totalSize = stat.size;
+
+        saveMetadata(currentMeta);
+      } else {
+        console.error(`[FFmpeg Server Transcode] Failed for video ${id} with exit code ${code}`);
+        currentMeta[id].transcodeStatus = "failed";
+        currentMeta[id].error = `Transcoding failed (exit code ${code})`;
+        saveMetadata(currentMeta);
+
+        if (fs.existsSync(outputPath)) {
+          try { fs.unlinkSync(outputPath); } catch (_) {}
+        }
+      }
+    });
+  });
+
   // 4. GET - Stream downloaded/downloading video using Range requests
   app.get("/api/video-stream/:id", (req, res) => {
     const { id } = req.params;
-    const videoPath = path.join(DOWNLOADS_DIR, `${id}.mp4`);
+    let videoPath = path.join(DOWNLOADS_DIR, `${id}.mp4`);
+    const transcodedPath = path.join(DOWNLOADS_DIR, `${id}-transcoded.mp4`);
+
+    if (fs.existsSync(transcodedPath)) {
+      videoPath = transcodedPath;
+    }
 
     if (!fs.existsSync(videoPath)) {
       return res.status(404).json({ error: "Video file not found in local cache." });
