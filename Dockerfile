@@ -8,7 +8,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install dependencies (including devDependencies required for bundling)
-RUN npm ci
+RUN npm install
 
 # Copy the entire codebase
 COPY . .
