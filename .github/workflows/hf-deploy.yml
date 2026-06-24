@@ -19,10 +19,16 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # 1. Configure Git credentials
+          # 1. Verify token exists
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::error::HF_TOKEN secret is empty or not found in GitHub Repository Secrets! Please add your Hugging Face Write Access Token under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+          # 2. Configure Git credentials
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
           
-          # 2. Add Hugging Face Space repository as a remote and push
-          # This will push the current HEAD commit directly to the Hugging Face main branch
-          git push --force https://QWAtro:$HF_TOKEN@huggingface.co/spaces/QWAtro/videoplay HEAD:refs/heads/main
+          # 3. Push to Hugging Face Space repository
+          # Using oauth:<token> is the recommended passwordless format for Hugging Face Git actions
+          git push --force https://oauth:$HF_TOKEN@huggingface.co/spaces/QWAtro/videoplay HEAD:refs/heads/main
