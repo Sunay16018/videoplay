@@ -1,0 +1,28 @@
+name: Sync to Hugging Face Spaces
+
+on:
+  push:
+    branches: [ main, master ]
+  # Allows manual triggers from the GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  deploy-to-huggingface:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Hugging Face requires full git history
+
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # 1. Configure Git credentials
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+          # 2. Add Hugging Face Space repository as a remote and push
+          # This will push the current HEAD commit directly to the Hugging Face main branch
+          git push --force https://QWAtro:$HF_TOKEN@huggingface.co/spaces/QWAtro/videoplay HEAD:refs/heads/main

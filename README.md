@@ -1,20 +1,38 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+---
+title: Videoplay Studio
+emoji: 🎬
+colorFrom: indigo
+colorTo: slate
+sdk: docker
+app_port: 7860
+pinned: false
+---
 
-# Run and deploy your AI Studio app
+# Videoplay Studio 🚀
 
-This contains everything you need to run your app locally.
+Ultra-smooth, professional, high-performance web-based video player and media studio. Optimized for minimal CPU/GPU usage on low-end machines, supporting offline rendering modes, dynamic scaling, and direct disk streaming.
 
-View your app in AI Studio: https://ai.studio/apps/792e66b9-401b-48e3-81e7-48d4beaaf87e
+## Features ✨
 
-## Run Locally
+- **Aesthetic Dark Theme**: High contrast layout crafted with tailwind.
+- **Dynamic Resolution Quality**: From `240p` up to `2160p` (4K) and `MAX` resolution limits.
+- **Offline & Canvas Rendering Modes**: Low-power state option to convert frame drawing inside active Canvas elements for maximum fluidity on weak devices.
+- **Download and Watch Simultenously**: Watch videos natively while downloading caches to local disk.
+- **Interactive Download HUD**: Visual % indicators and total sizes tracked in real-time.
 
-**Prerequisites:**  Node.js
+---
 
+## Deploy to Hugging Face Spaces 🛸
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+This repository is configured to deploy directly to Hugging Face Spaces using the provided `Dockerfile`.
+
+### Automated GitHub Deployment Setup
+
+We have included a GitHub Actions workflow that deploys every new commit automatically to your Hugging Face space!
+
+1. Go to your GitHub Repository: `Sunay16018/videoplay`
+2. Open **Settings** -> **Secrets and variables** -> **Actions**.
+3. Create a **New repository secret**:
+   - Name: `HF_TOKEN`
+   - Value: (Enter your Hugging Face **Write Access Token** from [Hugging Face Settings -> Access Tokens](https://huggingface.co/settings/tokens))
+4. Commit or push a new change to GitHub. GitHub Actions will handle the rest!

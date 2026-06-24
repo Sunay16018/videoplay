@@ -61,7 +61,7 @@ interface CachedVideo {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
   // Writable downloads directory in project root
   const DOWNLOADS_DIR = path.join(process.cwd(), "downloads");
