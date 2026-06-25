@@ -66,6 +66,7 @@ interface CachedVideo {
   transcodeStatus?: 'idle' | 'processing' | 'completed' | 'failed';
   transcodeProgress?: number;
   originalSize?: number;
+  isLive?: boolean;
 }
 
 async function startServer() {
@@ -292,7 +293,7 @@ async function startServer() {
 
   // 2. POST - Start downloading YouTube / web video in background
   app.post("/api/videos/download", async (req, res) => {
-    const { url, quality } = req.body;
+    const { url, quality, isLive } = req.body;
 
     if (!url) {
       return res.status(400).json({ error: "URL is required" });
@@ -307,11 +308,38 @@ async function startServer() {
 
     // Get metadata info
     const info = isYt ? await getYoutubeMetadata(cleanedUrl) : {
-      title: "Web Video (" + url.substring(0, 30) + ")",
-      thumbnail: "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=120&q=80"
+      title: url.includes(".m3u8") || isLive 
+        ? "Canlı Yayın (" + url.substring(0, 30) + "...)" 
+        : "Web Video (" + url.substring(0, 30) + ")",
+      thumbnail: url.includes(".m3u8") || isLive
+        ? "https://images.unsplash.com/photo-1526698905402-e1a019a38641?w=120&q=80"
+        : "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=120&q=80"
     };
 
     try {
+      // If it is a live stream or requested as live/instant, save immediately without background download
+      if (isLive || url.includes(".m3u8") || url.includes("/live/") || url.includes("youtube.com/live")) {
+        const metadata = loadMetadata();
+        const newVideo: CachedVideo = {
+          id,
+          url: cleanedUrl,
+          streamUrl: cleanedUrl,
+          title: info.title,
+          thumbnail: info.thumbnail,
+          status: "completed",
+          progress: 100,
+          totalSize: 0,
+          downloadedSize: 0,
+          quality: "live",
+          addedAt: Date.now(),
+          isLive: true
+        };
+
+        metadata[id] = newVideo;
+        saveMetadata(metadata);
+        return res.json(newVideo);
+      }
+
       // Resolve streaming URL before responding so client has immediate streamUrl for proxy playing!
       console.log(`Resolving Cobalt stream for: ${cleanedUrl}`);
       const streamUrl = await resolveUrlWithCobalt(cleanedUrl, quality);

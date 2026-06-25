@@ -2,7 +2,7 @@ export interface PlayerSettings {
   fpsLimit: number; // e.g. 15, 20, 24, 30, 60
   resolutionScale: number; // e.g. 0.25, 0.5, 0.75, 1.0
   playbackRate: number; // e.g. 0.5, 0.75, 1.0, 1.25, 1.5, 2.0
-  mode: 'native' | 'canvas';
+  mode: 'native' | 'canvas' | 'audio';
   audioVolume: number;
 }
 
@@ -35,4 +35,5 @@ export interface CachedVideo {
   transcodeStatus?: 'idle' | 'processing' | 'completed' | 'failed';
   transcodeProgress?: number;
   originalSize?: number;
+  isLive?: boolean;
 }

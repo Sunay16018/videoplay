@@ -6,7 +6,7 @@ import YoutubePlayer from './components/YoutubePlayer';
 import Diagnostics from './components/Diagnostics';
 import HelpGuides from './components/HelpGuides';
 import { 
-  Upload, Link2, FileVideo, Youtube, Globe, MonitorPlay, 
+  Upload, Link2, FileVideo, Youtube, Globe, MonitorPlay, Download,
   Trash2, Play, AlertCircle, RefreshCw, Cpu, Check, Loader2, PlayCircle, Settings, HardDrive, Sparkles, Info
 } from 'lucide-react';
 
@@ -71,6 +71,7 @@ export default function App() {
   const [cachedVideos, setCachedVideos] = useState<CachedVideo[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [resolutionQuality, setResolutionQuality] = useState<string>('360'); // Low res by default to save bandwidth/CPU
+  const [addMethod, setAddMethod] = useState<'download' | 'instant'>('download');
 
   // Selected view method (we can support 'canvas' for FPS/Quality control, or 'iframe' for fallback if needed)
   const [youtubePlayMethod, setYoutubePlayMethod] = useState<'canvas' | 'iframe'>('canvas');
@@ -134,9 +135,8 @@ export default function App() {
     if (!inputUrl.trim()) return;
 
     const isYt = inputUrl.includes('youtube.com') || inputUrl.includes('youtu.be');
-
-    // We always trigger the backend download, allowing the user to watch the video while it downloads!
-    // If they selected the standard player, it will render the YouTube Player while caching runs in the background.
+    const isLiveUrl = inputUrl.includes('/live/') || inputUrl.includes('youtube.com/live') || inputUrl.includes('.m3u8') || inputUrl.includes('m3u8');
+    const isInstant = addMethod === 'instant' || isLiveUrl;
 
     setIsSubmitting(true);
     try {
@@ -147,25 +147,33 @@ export default function App() {
         },
         body: JSON.stringify({
           url: inputUrl.trim(),
-          quality: resolutionQuality
+          quality: resolutionQuality,
+          isLive: isInstant
         })
       });
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || 'Failed to schedule download on server');
+        throw new Error(errData.error || 'Failed to add video on server');
       }
 
       const newDownload = await response.json();
       setInputUrl('');
       fetchCachedVideos();
 
-      // Automatically play this newly added video while it downloads!
+      // Automatically play this newly added video while it downloads or streams!
       handlePlayCachedVideo(newDownload.id, newDownload);
+
+      showNotification(
+        lang === 'tr' 
+          ? (isInstant ? 'Canlı yayın ortak listeye eklendi ve oynatılıyor!' : 'Video indirme başladı ve ortak listeye eklendi!')
+          : (isInstant ? 'Live stream added to shared playlist and playing!' : 'Video download started and added to shared playlist!'),
+        'success'
+      );
     } catch (err: any) {
-      const msg = err.message || (lang === 'tr' ? 'Video indirme kuyruğuna eklenemedi!' : 'Could not add video to downloading queue!');
+      const msg = err.message || (lang === 'tr' ? 'Video listeye eklenemedi!' : 'Could not add video to shared list!');
       
-      if (isYt) {
+      if (isYt && !isInstant) {
         // Automatic high-quality fallback! Switches instantly to Iframe mode and plays the video.
         setYoutubePlayMethod('iframe');
         setVideoSource(inputUrl.trim());
@@ -214,14 +222,32 @@ export default function App() {
       return;
     }
 
-    if (video.status === 'failed' && (video.url.includes('youtube.com') || video.url.includes('youtu.be'))) {
+    // Handle Live streams / Shared Instant streams
+    const isYt = video.url.includes('youtube.com') || video.url.includes('youtu.be');
+    const isLiveUrl = video.url.includes('/live/') || video.url.includes('youtube.com/live') || video.isLive;
+
+    if (isLiveUrl && isYt) {
+      setYoutubePlayMethod('iframe');
+      setVideoSource(video.url);
+      setActiveVideoId(id);
+      return;
+    }
+
+    if (video.url.includes('.m3u8') || video.url.includes('m3u8')) {
+      setYoutubePlayMethod('canvas');
+      setVideoSource(video.url);
+      setActiveVideoId(id);
+      return;
+    }
+
+    if (video.status === 'failed' && isYt) {
       setYoutubePlayMethod('iframe');
       setVideoSource(video.url);
       setActiveVideoId(id);
       showNotification(
         lang === 'tr' 
-          ? 'Bellekten Oynatılamadı: Bu video indirilememiş. Reklamsız Standart YouTube oynatıcısı ile oynatılıyor.' 
-          : 'Could not play from cache: This video failed to download. Playing via Standard YouTube player instead.', 
+          ? 'Ortak listeden oynatılıyor: Standart YouTube oynatıcısı aktif.' 
+          : 'Playing from shared list: Standard YouTube player active.', 
         'info'
       );
       return;
@@ -774,60 +800,88 @@ export default function App() {
             
             {/* URL & File Input Card */}
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col gap-5">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                {t.loadVideo}
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-indigo-400 flex items-center justify-between">
+                <span>🔗 {lang === 'tr' ? 'Ortak Listeye Video Ekle' : 'Add to Shared Playlist'}</span>
+                <span className="text-[9px] bg-indigo-500/10 px-2 py-0.5 rounded-full border border-indigo-500/20 text-indigo-300 font-mono animate-pulse">
+                  {lang === 'tr' ? 'Ortak Havuz' : 'Shared Pool'}
+                </span>
               </h3>
 
               {/* Form loader */}
-              <form onSubmit={handleAddDownload} className="flex flex-col gap-3">
-                <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1">
-                  <Link2 className="w-3 h-3 text-slate-400" />
-                  {t.youtubeUrl}
-                </label>
-                <div className="flex gap-2">
+              <form onSubmit={handleAddDownload} className="flex flex-col gap-3.5">
+                <div className="flex flex-col gap-2.5">
                   <input
                     type="text"
-                    placeholder={t.youtubePlaceholder}
+                    placeholder={lang === 'tr' ? 'YouTube video, Canlı Yayın, .m3u8 veya doğrudan .mp4 linki...' : 'YouTube video, Live Stream, .m3u8 or direct .mp4 link...'}
                     value={inputUrl}
                     onChange={(e) => setInputUrl(e.target.value)}
-                    className="flex-1 bg-slate-950 border border-slate-800 hover:border-slate-700 focus:border-indigo-500 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-600 outline-none transition-colors"
+                    className="w-full bg-slate-950 border border-slate-800 hover:border-slate-700 focus:border-indigo-500 rounded-xl px-3.5 py-2.5 text-xs text-slate-200 placeholder-slate-600 outline-none transition-all shadow-inner font-mono"
                   />
-                  <button
-                    type="submit"
-                    disabled={!inputUrl.trim() || isSubmitting}
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40 disabled:cursor-not-allowed font-semibold px-3 py-2 rounded-xl text-xs transition-colors flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
-                    title={lang === 'tr' ? 'Videoyu Hugging Face sunucusuna indirir ve önbellekten donmadan oynatır.' : 'Downloads the video to the Hugging Face server and streams it from local cache.'}
-                  >
-                    {isSubmitting ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Play className="w-3.5 h-3.5 fill-current" />
-                    )}
-                    {lang === 'tr' ? 'İndir ve İzle' : 'Download & Watch'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleInstantPlay}
-                    disabled={!inputUrl.trim() || isSubmitting}
-                    className="bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40 disabled:cursor-not-allowed font-semibold px-3 py-2 rounded-xl text-xs transition-colors flex items-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
-                    title={lang === 'tr' ? 'Canlı yayınları (.m3u8) veya doğrudan video linklerini sunucuya indirmeden anında oynatır.' : 'Plays live streams (.m3u8) or direct video links instantly without downloading first.'}
-                  >
-                    <MonitorPlay className="w-3.5 h-3.5" />
-                    {lang === 'tr' ? 'Anında / Canlı' : 'Instant / Live'}
-                  </button>
+
+                  {/* Add Method Selector */}
+                  <div className="grid grid-cols-2 gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-850">
+                    <button
+                      type="button"
+                      onClick={() => setAddMethod('download')}
+                      className={`py-2 px-1 text-[10px] font-semibold rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                        addMethod === 'download' 
+                          ? 'bg-indigo-600/15 text-indigo-400 border border-indigo-500/20 shadow-sm font-bold' 
+                          : 'text-slate-500 border border-transparent hover:text-slate-300'
+                      }`}
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      {lang === 'tr' ? 'Sunucuya İndir' : 'Download & Cache'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAddMethod('instant')}
+                      className={`py-2 px-1 text-[10px] font-semibold rounded-lg transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                        addMethod === 'instant' 
+                          ? 'bg-emerald-600/15 text-emerald-400 border border-emerald-500/20 shadow-sm font-bold' 
+                          : 'text-slate-500 border border-transparent hover:text-slate-300'
+                      }`}
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      {lang === 'tr' ? 'Canlı / Anında' : 'Live / Instant'}
+                    </button>
+                  </div>
                 </div>
 
+                {/* Submitting Button */}
+                <button
+                  type="submit"
+                  disabled={!inputUrl.trim() || isSubmitting}
+                  className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-md active:scale-95 cursor-pointer text-white ${
+                    addMethod === 'instant'
+                      ? 'bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40'
+                      : 'bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40'
+                  }`}
+                >
+                  {isSubmitting ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : addMethod === 'instant' ? (
+                    <MonitorPlay className="w-4 h-4" />
+                  ) : (
+                    <Download className="w-4 h-4" />
+                  )}
+                  {isSubmitting 
+                    ? (lang === 'tr' ? 'Ortak Havuza Ekleniyor...' : 'Adding to Shared Pool...') 
+                    : lang === 'tr' 
+                      ? 'Ortak Listeye Ekle' 
+                      : 'Add to Shared List'}
+                </button>
+
                 {/* Playback Method Selector */}
-                <div className="mt-2 pt-2 border-t border-slate-800/60 flex flex-col gap-2">
+                <div className="mt-1 pt-2 border-t border-slate-800/60 flex flex-col gap-1.5">
                   <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
-                    <Sparkles className="w-3 h-3 text-indigo-400 animate-pulse" />
+                    <Sparkles className="w-3 h-3 text-indigo-400" />
                     {t.watchModeLabel}
                   </span>
                   <div className="grid grid-cols-2 gap-1.5">
                     <button
                       type="button"
                       onClick={() => setYoutubePlayMethod('canvas')}
-                      className={`px-2.5 py-1.5 rounded-xl text-[10px] font-sans border transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                      className={`px-2 py-1.5 rounded-lg text-[10px] font-sans border transition-all flex items-center justify-center gap-1 cursor-pointer ${
                         youtubePlayMethod === 'canvas'
                           ? 'bg-indigo-600/20 text-indigo-400 border-indigo-500/30 font-bold'
                           : 'bg-slate-950 text-slate-500 border-slate-900 hover:text-slate-300'
@@ -839,7 +893,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setYoutubePlayMethod('iframe')}
-                      className={`px-2.5 py-1.5 rounded-xl text-[10px] font-sans border transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                      className={`px-2 py-1.5 rounded-lg text-[10px] font-sans border transition-all flex items-center justify-center gap-1 cursor-pointer ${
                         youtubePlayMethod === 'iframe'
                           ? 'bg-rose-600/20 text-rose-400 border-rose-500/30 font-bold'
                           : 'bg-slate-950 text-slate-500 border-slate-900 hover:text-slate-300'
@@ -851,29 +905,31 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Quality selection for YouTube buffering */}
-                <div className="mt-2 pt-2 border-t border-slate-800/60 flex items-center justify-between">
-                  <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
-                    <Settings className="w-3 h-3 text-slate-500" />
-                    {t.qualityAutoLabel}
-                  </span>
-                  <div className="flex gap-1">
-                    {['240', '360', '480', '720', '1080', '1440', '2160', 'max'].map((q) => (
-                      <button
-                        key={q}
-                        type="button"
-                        onClick={() => setResolutionQuality(q)}
-                        className={`px-1.5 py-0.5 text-[9px] rounded font-mono border transition-all cursor-pointer ${
-                          resolutionQuality === q 
-                            ? 'bg-indigo-600/20 text-indigo-400 border-indigo-500/30 font-bold' 
-                            : 'bg-slate-950 text-slate-500 border-slate-900 hover:text-slate-300'
-                        }`}
-                      >
-                        {q === 'max' ? 'MAX' : `${q}p`}
-                      </button>
-                    ))}
+                {/* Quality selection for YouTube buffering (Only if download is selected) */}
+                {addMethod === 'download' && (
+                  <div className="mt-1 pt-2 border-t border-slate-800/60 flex items-center justify-between">
+                    <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
+                      <Settings className="w-3 h-3 text-slate-500" />
+                      {t.qualityAutoLabel}
+                    </span>
+                    <div className="flex gap-1">
+                      {['240', '360', '480', '720', '1080', 'max'].map((q) => (
+                        <button
+                          key={q}
+                          type="button"
+                          onClick={() => setResolutionQuality(q)}
+                          className={`px-1.5 py-0.5 text-[9px] rounded font-mono border transition-all cursor-pointer ${
+                            resolutionQuality === q 
+                              ? 'bg-indigo-600/20 text-indigo-400 border-indigo-500/30 font-bold' 
+                              : 'bg-slate-950 text-slate-500 border-slate-900 hover:text-slate-300'
+                          }`}
+                        >
+                          {q === 'max' ? 'MAX' : `${q}p`}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
               </form>
 
               <div className="relative flex py-1 items-center">

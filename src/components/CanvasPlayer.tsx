@@ -529,7 +529,7 @@ export default function CanvasPlayer({
         <video
           ref={videoRef}
           src={videoSrc && (videoSrc.includes('.m3u8') || videoSrc.includes('m3u8')) ? undefined : (videoSrc || undefined)}
-          className={settings.mode === 'canvas' ? 'absolute inset-0 w-full h-full opacity-0 pointer-events-none' : 'w-full h-full object-contain block'}
+          className={(settings.mode === 'canvas' || settings.mode === 'audio') ? 'absolute inset-0 w-full h-full opacity-0 pointer-events-none' : 'w-full h-full object-contain block'}
           onTimeUpdate={handleTimeUpdate}
           onLoadedMetadata={handleLoadedMetadata}
           onError={() => {
@@ -546,6 +546,54 @@ export default function CanvasPlayer({
             ref={canvasRef}
             className="w-full h-full object-contain bg-slate-950"
           />
+        )}
+
+        {/* Audio Only Mode Visualizer Overlay */}
+        {settings.mode === 'audio' && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950 text-slate-300 select-none animate-in fade-in duration-300">
+            {/* Pulsating disk or music icon in the center */}
+            <div className={`p-6 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 mb-4 relative flex items-center justify-center ${isPlaying ? 'animate-pulse' : ''}`}>
+              <div className={`absolute inset-0 rounded-full border border-indigo-500/10 animate-ping opacity-25 ${isPlaying ? '' : 'paused'}`} style={{ animationDuration: '2s' }} />
+              <svg className="w-10 h-10" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+              </svg>
+            </div>
+            
+            <h4 className="text-sm font-semibold text-indigo-300 font-sans tracking-wide">
+              {lang === 'tr' ? 'Sadece Ses Modu Aktif' : 'Audio-Only Mode Active'}
+            </h4>
+            <p className="text-[10px] text-slate-500 font-mono mt-1 uppercase tracking-wider">
+              {isPlaying ? (lang === 'tr' ? 'Ses oynatılıyor...' : 'Playing audio stream...') : (lang === 'tr' ? 'Duraklatıldı' : 'Paused')}
+            </p>
+
+            {/* Bouncing audio wave bars */}
+            <div className="flex items-end gap-1 h-8 mt-5">
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((i) => {
+                const delay = `${i * 0.08}s`;
+                const duration = `${0.5 + (i % 4) * 0.15}s`;
+                return (
+                  <div
+                    key={i}
+                    className="w-1 bg-indigo-500 rounded-full transition-all duration-300"
+                    style={{
+                      height: isPlaying ? '100%' : '15%',
+                      animation: isPlaying ? `bounceWave ${duration} ease-in-out infinite alternate` : 'none',
+                      animationDelay: isPlaying ? delay : '0s',
+                      minHeight: '4px',
+                      maxHeight: '32px',
+                    }}
+                  />
+                );
+              })}
+            </div>
+
+            <style dangerouslySetInnerHTML={{__html: `
+              @keyframes bounceWave {
+                0% { height: 15%; }
+                100% { height: 100%; }
+              }
+            `}} />
+          </div>
         )}
 
         {/* Initial loading screen */}
@@ -673,32 +721,43 @@ export default function CanvasPlayer({
             <label className="text-xs font-semibold text-slate-300 tracking-wide uppercase">
               {t.playerMode}
             </label>
-            <div className="grid grid-cols-2 gap-2 bg-slate-950 p-1 rounded-xl border border-slate-800">
+            <div className="grid grid-cols-3 gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
               <button
                 type="button"
                 onClick={() => setSettings(prev => ({ ...prev, mode: 'native' }))}
-                className={`py-2 px-3 text-xs font-medium rounded-lg transition-all ${
+                className={`py-2 px-1 text-[10px] font-medium rounded-lg transition-all text-center ${
                   settings.mode === 'native' 
                     ? 'bg-indigo-600/10 text-indigo-400 border border-indigo-500/20 shadow-sm' 
                     : 'text-slate-400 border border-transparent hover:text-slate-200'
                 }`}
               >
-                {t.nativeMode}
+                {t.nativeMode.split(' ')[0]}
               </button>
               <button
                 type="button"
                 onClick={() => setSettings(prev => ({ ...prev, mode: 'canvas' }))}
-                className={`py-2 px-3 text-xs font-medium rounded-lg transition-all ${
+                className={`py-2 px-1 text-[10px] font-medium rounded-lg transition-all text-center ${
                   settings.mode === 'canvas' 
                     ? 'bg-indigo-600/15 text-indigo-400 border border-indigo-500/30 shadow-sm' 
                     : 'text-slate-400 border border-transparent hover:text-slate-200'
                 }`}
               >
-                🚀 {t.canvasMode}
+                🚀 {t.canvasMode.split(' ')[0]}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSettings(prev => ({ ...prev, mode: 'audio' }))}
+                className={`py-2 px-1 text-[10px] font-medium rounded-lg transition-all text-center ${
+                  settings.mode === 'audio' 
+                    ? 'bg-indigo-600/15 text-indigo-400 border border-indigo-500/30 shadow-sm' 
+                    : 'text-slate-400 border border-transparent hover:text-slate-200'
+                }`}
+              >
+                🎵 {lang === 'tr' ? 'Sadece Ses' : 'Audio Only'}
               </button>
             </div>
             <p className="text-[11px] text-slate-400 leading-relaxed mt-1">
-              {settings.mode === 'canvas' ? t.canvasDesc : t.nativeDesc}
+              {settings.mode === 'canvas' ? t.canvasDesc : settings.mode === 'audio' ? t.audioDesc : t.nativeDesc}
             </p>
           </div>
 
