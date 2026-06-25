@@ -537,6 +537,7 @@ export default function CanvasPlayer({
               setVideoError(lang === 'tr' ? 'Video formatı bu tarayıcıda açılamıyor.' : 'Video format is not supported by this browser.');
             }
           }}
+          crossOrigin="anonymous"
           playsInline
         />
 

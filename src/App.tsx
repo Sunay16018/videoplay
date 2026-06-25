@@ -253,9 +253,25 @@ export default function App() {
       return;
     }
 
+    const lowercaseUrl = video.url.toLowerCase();
+    const isDirect = lowercaseUrl.includes('huggingface.co') || 
+                     lowercaseUrl.endsWith('.mp4') || 
+                     lowercaseUrl.endsWith('.webm') || 
+                     lowercaseUrl.endsWith('.mkv') || 
+                     lowercaseUrl.endsWith('.mov') || 
+                     lowercaseUrl.endsWith('.avi') || 
+                     lowercaseUrl.endsWith('.3gp') || 
+                     lowercaseUrl.endsWith('.m4v');
+
     if (video.status === 'completed') {
       const streamUrl = `/api/video-stream/${id}`;
       setVideoSource(streamUrl);
+      if (youtubePlayMethod !== 'iframe') {
+        setYoutubePlayMethod('canvas');
+      }
+    } else if (isDirect) {
+      // Direct media file (e.g. Hugging Face MP4) can be streamed directly in the browser with native range support, bypassing proxy-stream
+      setVideoSource(video.url);
       if (youtubePlayMethod !== 'iframe') {
         setYoutubePlayMethod('canvas');
       }

@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import { Readable } from "stream";
 import { createServer as createViteServer } from "vite";
 
 function cleanYoutubeUrl(url: string): string {
@@ -805,13 +806,11 @@ async function startServer() {
       res.writeHead(response.status, responseHeaders);
 
       if (response.body) {
-        const reader = (response.body as any).getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          res.write(Buffer.from(value));
-        }
-        res.end();
+        const nodeStream = Readable.fromWeb(response.body as any);
+        nodeStream.pipe(res);
+        req.on("close", () => {
+          nodeStream.destroy();
+        });
       } else {
         res.end();
       }
