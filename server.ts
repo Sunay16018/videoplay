@@ -327,15 +327,13 @@ async function startServer() {
   // 1. GET - List all downloading & downloaded videos
   app.get("/api/videos", (req, res) => {
     const metadata = loadMetadata();
-    // Return sorted such that completed videos (progress = 100) are at the very top (en başta),
-    // and among them, sorted by addedAt (newest first).
+    // Return sorted such that videos with maximum progress/values are at the very top,
+    // and then sorted by addedAt (newest first).
     const list = Object.values(metadata).sort((a, b) => {
-      const aVal = a.progress === 100 ? 1 : 0;
-      const bVal = b.progress === 100 ? 1 : 0;
-      if (aVal !== bVal) {
-        return bVal - aVal; // 100% progress/completed first
+      if (b.progress !== a.progress) {
+        return b.progress - a.progress; // Higher progress first
       }
-      return b.addedAt - a.addedAt;
+      return b.addedAt - a.addedAt; // Then newest first
     });
     res.json(list);
   });
@@ -446,8 +444,17 @@ async function startServer() {
         activeDownloads.set(id, { controller: abortController, fileStream });
 
         try {
-          // Connect to stream
-          const response = await fetch(streamUrl, { signal: abortController.signal });
+          // Connect to stream with browser-like headers & follow redirect to support CDNs like Hugging Face
+          const headers: Record<string, string> = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+            "Referer": "https://huggingface.co/"
+          };
+          const response = await fetch(streamUrl, { 
+            signal: abortController.signal,
+            headers,
+            redirect: "follow"
+          });
           if (!response.ok) {
             throw new Error(`Failed to stream content: HTTP ${response.status}`);
           }
@@ -757,13 +764,18 @@ async function startServer() {
 
       const range = req.headers.range;
       const headers: Record<string, string> = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Referer": "https://huggingface.co/"
       };
       if (range) {
         headers["Range"] = range;
       }
 
-      const response = await fetch(decodedUrl, { headers });
+      const response = await fetch(decodedUrl, { 
+        headers,
+        redirect: "follow"
+      });
       
       const responseHeaders: Record<string, string | string[]> = {
         "Access-Control-Allow-Origin": "*",
