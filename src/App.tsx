@@ -912,8 +912,8 @@ export default function App() {
                       <Settings className="w-3 h-3 text-slate-500" />
                       {t.qualityAutoLabel}
                     </span>
-                    <div className="flex gap-1">
-                      {['240', '360', '480', '720', '1080', 'max'].map((q) => (
+                    <div className="flex gap-1 flex-wrap justify-end">
+                      {['240', '360', '480', '720', '1080', '1440', '2160', 'max'].map((q) => (
                         <button
                           key={q}
                           type="button"
