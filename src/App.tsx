@@ -64,13 +64,13 @@ export default function App() {
   
   // Server-side transcode settings state
   const [transcodeModal, setTranscodeModal] = useState<{ show: boolean; videoId: string; title: string } | null>(null);
-  const [transcodeFps, setTranscodeFps] = useState<number>(30);
-  const [transcodeRes, setTranscodeRes] = useState<string>('1280:720'); // Default to awesome 720p!
+  const [transcodeFps, setTranscodeFps] = useState<number>(60); // Default to maximum 60 FPS
+  const [transcodeRes, setTranscodeRes] = useState<string>('1920:1080'); // Default to maximum awesome 1080p!
 
   // Cache download list
   const [cachedVideos, setCachedVideos] = useState<CachedVideo[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [resolutionQuality, setResolutionQuality] = useState<string>('360'); // Low res by default to save bandwidth/CPU
+  const [resolutionQuality, setResolutionQuality] = useState<string>('max'); // Maximum resolution quality by default
   const [addMethod, setAddMethod] = useState<'download' | 'instant'>('download');
 
   // Selected view method (we can support 'canvas' for FPS/Quality control, or 'iframe' for fallback if needed)
@@ -82,7 +82,7 @@ export default function App() {
 
   // Player settings state
   const [settings, setSettings] = useState<PlayerSettings>({
-    fpsLimit: 30, // Default to standard 30 FPS
+    fpsLimit: 60, // Default to maximum 60 FPS
     resolutionScale: 1.0, // Default to full resolution
     playbackRate: 1.0,
     mode: 'native', // Default to smooth, hardware-accelerated native mode!

@@ -48,6 +48,47 @@ function cleanYoutubeUrl(url: string): string {
   return url;
 }
 
+function isDirectVideoUrl(url: string): boolean {
+  try {
+    const lowercase = url.toLowerCase();
+    // Hugging Face dataset download / raw files
+    if (lowercase.includes("huggingface.co")) {
+      return true;
+    }
+    // Direct video extension check (with or without query parameters)
+    const urlWithoutQuery = url.split("?")[0].split("#")[0].toLowerCase();
+    if (
+      urlWithoutQuery.endsWith(".mp4") ||
+      urlWithoutQuery.endsWith(".webm") ||
+      urlWithoutQuery.endsWith(".mkv") ||
+      urlWithoutQuery.endsWith(".mov") ||
+      urlWithoutQuery.endsWith(".avi") ||
+      urlWithoutQuery.endsWith(".3gp") ||
+      urlWithoutQuery.endsWith(".m4v")
+    ) {
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+function getFilenameFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const pathname = parsed.pathname;
+    const parts = pathname.split("/");
+    const lastPart = parts[parts.length - 1];
+    if (lastPart) {
+      const decoded = decodeURIComponent(lastPart);
+      if (decoded.includes(".")) {
+        return decoded.split(".")[0]; // return without extension
+      }
+      return decoded;
+    }
+  } catch (e) {}
+  return "Dataset Video";
+}
+
 interface CachedVideo {
   id: string;
   url: string;
@@ -286,8 +327,16 @@ async function startServer() {
   // 1. GET - List all downloading & downloaded videos
   app.get("/api/videos", (req, res) => {
     const metadata = loadMetadata();
-    // Return sorted by added date (newest first)
-    const list = Object.values(metadata).sort((a, b) => b.addedAt - a.addedAt);
+    // Return sorted such that completed videos (progress = 100) are at the very top (en başta),
+    // and among them, sorted by addedAt (newest first).
+    const list = Object.values(metadata).sort((a, b) => {
+      const aVal = a.progress === 100 ? 1 : 0;
+      const bVal = b.progress === 100 ? 1 : 0;
+      if (aVal !== bVal) {
+        return bVal - aVal; // 100% progress/completed first
+      }
+      return b.addedAt - a.addedAt;
+    });
     res.json(list);
   });
 
@@ -306,15 +355,31 @@ async function startServer() {
     const isYt = url.includes("youtube.com") || url.includes("youtu.be");
     const cleanedUrl = isYt ? cleanYoutubeUrl(url) : url;
 
+    const isDirect = isDirectVideoUrl(cleanedUrl);
+    const isHf = cleanedUrl.toLowerCase().includes("huggingface.co");
+
     // Get metadata info
-    const info = isYt ? await getYoutubeMetadata(cleanedUrl) : {
-      title: url.includes(".m3u8") || isLive 
-        ? "Canlı Yayın (" + url.substring(0, 30) + "...)" 
-        : "Web Video (" + url.substring(0, 30) + ")",
-      thumbnail: url.includes(".m3u8") || isLive
-        ? "https://images.unsplash.com/photo-1526698905402-e1a019a38641?w=120&q=80"
-        : "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=120&q=80"
-    };
+    let info;
+    if (isYt) {
+      info = await getYoutubeMetadata(cleanedUrl);
+    } else if (isDirect) {
+      const filename = getFilenameFromUrl(cleanedUrl);
+      info = {
+        title: isHf ? "Hugging Face: " + filename : "Direct Video: " + filename,
+        thumbnail: isHf
+          ? "https://images.unsplash.com/photo-1620712943543-bcc4688e7485?w=120&q=80"
+          : "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=120&q=80"
+      };
+    } else {
+      info = {
+        title: url.includes(".m3u8") || isLive 
+          ? "Canlı Yayın (" + url.substring(0, 30) + "...)" 
+          : "Web Video (" + url.substring(0, 30) + ")",
+        thumbnail: url.includes(".m3u8") || isLive
+          ? "https://images.unsplash.com/photo-1526698905402-e1a019a38641?w=120&q=80"
+          : "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=120&q=80"
+      };
+    }
 
     try {
       // If it is a live stream or requested as live/instant, save immediately without background download
@@ -341,10 +406,16 @@ async function startServer() {
       }
 
       // Resolve streaming URL before responding so client has immediate streamUrl for proxy playing!
-      console.log(`Resolving Cobalt stream for: ${cleanedUrl}`);
-      const streamUrl = await resolveUrlWithCobalt(cleanedUrl, quality);
-      if (!streamUrl) {
-        return res.status(502).json({ error: "Could not extract stream. Video might be restricted, copyright protected, or Cobalt API is busy." });
+      let streamUrl = cleanedUrl;
+      if (isDirect) {
+        console.log(`Bypassing Cobalt for direct/HuggingFace video stream: ${cleanedUrl}`);
+      } else {
+        console.log(`Resolving Cobalt stream for: ${cleanedUrl}`);
+        const resolved = await resolveUrlWithCobalt(cleanedUrl, quality);
+        if (!resolved) {
+          return res.status(502).json({ error: "Could not extract stream. Video might be restricted, copyright protected, or Cobalt API is busy." });
+        }
+        streamUrl = resolved;
       }
 
       const metadata = loadMetadata();
@@ -358,7 +429,7 @@ async function startServer() {
         progress: 0,
         totalSize: 0,
         downloadedSize: 0,
-        quality: quality || "360",
+        quality: quality || "max",
         addedAt: Date.now()
       };
 
