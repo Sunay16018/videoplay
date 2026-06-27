@@ -822,6 +822,7 @@ export default function App() {
                     lang={lang}
                     onUpdateDiagnostics={setDiagnostics}
                     activeVideoId={activeVideoId}
+                    activeVideo={activeVideo}
                   />
                 )}
               </div>

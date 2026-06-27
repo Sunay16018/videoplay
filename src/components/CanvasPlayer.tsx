@@ -15,6 +15,7 @@ interface CanvasPlayerProps {
   lang: Language;
   onUpdateDiagnostics: (data: DiagnosticsData) => void;
   activeVideoId?: string | null;
+  activeVideo?: any;
 }
 
 export default function CanvasPlayer({ 
@@ -23,7 +24,8 @@ export default function CanvasPlayer({
   setSettings, 
   lang, 
   onUpdateDiagnostics,
-  activeVideoId = null
+  activeVideoId = null,
+  activeVideo = null
 }: CanvasPlayerProps) {
   const t = translations[lang];
 
@@ -41,6 +43,7 @@ export default function CanvasPlayer({
   const [isHovered, setIsHovered] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isControlsVisible, setIsControlsVisible] = useState(true);
+  const [isScrubbing, setIsScrubbing] = useState(false);
 
   // Keep a direct ref to settings for the animation loop to avoid dependency restarts
   const settingsRef = useRef(settings);
@@ -375,7 +378,7 @@ export default function CanvasPlayer({
 
   // Update time tracker on native video ticks
   const handleTimeUpdate = () => {
-    if (videoRef.current) {
+    if (videoRef.current && !isScrubbing) {
       setCurrentTime(videoRef.current.currentTime);
     }
   };
@@ -384,6 +387,13 @@ export default function CanvasPlayer({
     if (videoRef.current) {
       setDuration(videoRef.current.duration);
       setVideoLoaded(true);
+
+      const target = (videoRef.current as any)._targetSeekTime;
+      if (target !== undefined && target !== null) {
+        videoRef.current.currentTime = target;
+        setCurrentTime(target);
+        delete (videoRef.current as any)._targetSeekTime;
+      }
 
       // Trigger initial diagnostic info
       onUpdateDiagnostics({
@@ -413,20 +423,53 @@ export default function CanvasPlayer({
     }
   };
 
+  const performSeek = (newTime: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (activeVideo?.isLiveDownload) {
+      // Reload the video source with a unique timestamp to force the browser to check the new file size
+      const baseSrc = videoSrc.split('?')[0];
+      const buster = `?t=${Date.now()}`;
+      setVideoSrc(`${baseSrc}${buster}`);
+      
+      // Store the target seek time so we can apply it when the metadata finishes loading
+      (video as any)._targetSeekTime = newTime;
+      
+      // Load the video
+      video.load();
+      // Keep playing if it was playing
+      if (isPlaying) {
+        video.play().catch(() => {});
+      }
+    } else {
+      video.currentTime = newTime;
+      setCurrentTime(newTime);
+      if (settings.mode === 'canvas' && !isPlaying) {
+        setTimeout(() => {
+          drawSingleFrame();
+        }, 50);
+      }
+    }
+  };
+
   const handleScrub = (e: React.ChangeEvent<HTMLInputElement>) => {
     const video = videoRef.current;
     if (!video) return;
 
     const newTime = parseFloat(e.target.value);
-    video.currentTime = newTime;
-    setCurrentTime(newTime);
-
-    // If in canvas mode and paused, draw a single frame immediately on seeking
-    if (settings.mode === 'canvas' && !isPlaying) {
-      setTimeout(() => {
-        drawSingleFrame();
-      }, 50);
+    
+    // For non-live videos, we can seek immediately on scrub drag
+    if (!activeVideo?.isLiveDownload) {
+      video.currentTime = newTime;
+      // If in canvas mode and paused, draw a single frame immediately on seeking
+      if (settings.mode === 'canvas' && !isPlaying) {
+        setTimeout(() => {
+          drawSingleFrame();
+        }, 50);
+      }
     }
+    setCurrentTime(newTime);
   };
 
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -775,6 +818,17 @@ export default function CanvasPlayer({
           </div>
         )}
 
+        {/* Live recording badge indicator */}
+        {activeVideo?.isLiveDownload && (
+          <div className="absolute top-4 left-4 z-20 flex items-center gap-2 bg-slate-950/80 backdrop-blur-md border border-rose-500/30 px-2.5 py-1.5 rounded-full select-none shadow-lg">
+            <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping absolute"></span>
+            <span className="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block"></span>
+            <span className="text-[10px] font-bold text-rose-400 tracking-wider uppercase font-mono">
+              {lang === 'tr' ? 'CANLI KAYIT İZLENİYOR' : 'WATCHING LIVE RECORDING'}
+            </span>
+          </div>
+        )}
+
         {/* Video Controls Overlay (Fade in on hover or when paused or controls are active) */}
         <div 
           id="player-controls-overlay"
@@ -790,14 +844,24 @@ export default function CanvasPlayer({
             <input
               type="range"
               min={0}
-              max={duration || 100}
+              max={Math.max(duration, activeVideo?.recordedDuration || 0) || 100}
               step={0.1}
               value={currentTime}
+              onMouseDown={() => setIsScrubbing(true)}
+              onTouchStart={() => setIsScrubbing(true)}
               onChange={handleScrub}
+              onMouseUp={(e: any) => {
+                setIsScrubbing(false);
+                performSeek(parseFloat(e.target.value));
+              }}
+              onTouchEnd={(e: any) => {
+                setIsScrubbing(false);
+                performSeek(parseFloat(e.target.value));
+              }}
               className="flex-1 accent-indigo-500 h-1 bg-slate-800 rounded-full cursor-pointer appearance-none outline-none focus:ring-1 focus:ring-indigo-400"
             />
             <span className="text-[10px] text-slate-300 font-mono w-10 text-left">
-              {formatTime(duration)}
+              {formatTime(Math.max(duration, activeVideo?.recordedDuration || 0))}
             </span>
           </div>
 
