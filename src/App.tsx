@@ -7,7 +7,8 @@ import Diagnostics from './components/Diagnostics';
 import HelpGuides from './components/HelpGuides';
 import { 
   Upload, Link2, FileVideo, Youtube, Globe, MonitorPlay, Download,
-  Trash2, Play, AlertCircle, RefreshCw, Cpu, Check, Loader2, PlayCircle, Settings, HardDrive, Sparkles, Info
+  Trash2, Play, AlertCircle, RefreshCw, Cpu, Check, Loader2, PlayCircle, Settings, HardDrive, Sparkles, Info,
+  Square, Video
 } from 'lucide-react';
 
 export default function App() {
@@ -136,7 +137,7 @@ export default function App() {
 
     const isYt = inputUrl.includes('youtube.com') || inputUrl.includes('youtu.be');
     const isLiveUrl = inputUrl.includes('/live/') || inputUrl.includes('youtube.com/live') || inputUrl.includes('.m3u8') || inputUrl.includes('m3u8');
-    const isInstant = addMethod === 'instant' || isLiveUrl;
+    const isInstant = addMethod === 'instant';
 
     setIsSubmitting(true);
     try {
@@ -270,8 +271,9 @@ export default function App() {
         setYoutubePlayMethod('canvas');
       }
     } else if (isDirect) {
-      // Direct media file (e.g. Hugging Face MP4) can be streamed directly in the browser with native range support, bypassing proxy-stream
-      setVideoSource(video.url);
+      // Direct media file (e.g. Hugging Face MP4) must be streamed via our proxy to avoid CORS and iframe limitations
+      const proxyUrl = `/api/proxy-stream?url=${encodeURIComponent(video.url)}`;
+      setVideoSource(proxyUrl);
       if (youtubePlayMethod !== 'iframe') {
         setYoutubePlayMethod('canvas');
       }
@@ -309,6 +311,28 @@ export default function App() {
       }
     } catch (err) {
       console.error('Failed to delete video:', err);
+    }
+  };
+
+  // Gracefully stop active live stream recording
+  const handleStopRecording = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const response = await fetch(`/api/videos/stop-recording/${id}`, {
+        method: 'POST'
+      });
+      if (response.ok) {
+        showNotification(
+          lang === 'tr' ? 'Kayıt durduruluyor, video tamamlanıyor...' : 'Stopping recording, finalizing video...',
+          'info'
+        );
+        fetchCachedVideos();
+      } else {
+        const errData = await response.json().catch(() => ({}));
+        showNotification(errData.error || 'Failed to stop recording', 'error');
+      }
+    } catch (err: any) {
+      showNotification(err.message || 'Error stopping recording', 'error');
     }
   };
 
@@ -430,6 +454,18 @@ export default function App() {
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  };
+
+  // Helper to format seconds to mm:ss or hh:mm:ss
+  const formatSeconds = (seconds: number | undefined) => {
+    if (seconds === undefined || isNaN(seconds)) return '0:00';
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    if (hrs > 0) {
+      return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   return (
@@ -785,6 +821,7 @@ export default function App() {
                     setSettings={setSettings}
                     lang={lang}
                     onUpdateDiagnostics={setDiagnostics}
+                    activeVideoId={activeVideoId}
                   />
                 )}
               </div>
@@ -1050,9 +1087,16 @@ export default function App() {
                             {/* Status label / stats */}
                             <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                               {video.status === 'downloading' ? (
-                                <span className="text-[9px] text-indigo-400 font-semibold flex items-center gap-1 font-mono">
-                                  {video.progress}% {t.statusDownloading}
-                                </span>
+                                video.isLiveDownload ? (
+                                  <span className="text-[9px] text-rose-400 font-semibold flex items-center gap-1 font-mono bg-rose-500/10 px-1 py-0.5 rounded">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse inline-block"></span>
+                                    {lang === 'tr' ? 'CANLI KAYIT' : 'RECORDING'} ({formatSeconds(video.recordedDuration)})
+                                  </span>
+                                ) : (
+                                  <span className="text-[9px] text-indigo-400 font-semibold flex items-center gap-1 font-mono">
+                                    {video.progress}% {t.statusDownloading}
+                                  </span>
+                                )
                               ) : video.status === 'completed' ? (
                                 <span className="text-[9px] text-emerald-400 font-semibold flex items-center gap-0.5 font-mono">
                                   ✓ {lang === 'tr' ? 'Hazır' : 'Ready'}
@@ -1097,6 +1141,17 @@ export default function App() {
 
                         {/* Interactive control buttons */}
                         <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+                          {/* Stop Recording button */}
+                          {video.status === 'downloading' && video.isLiveDownload && (
+                            <button
+                              onClick={(e) => handleStopRecording(video.id, e)}
+                              className="p-1 rounded-lg bg-slate-900 hover:bg-rose-950/40 text-rose-500 hover:text-rose-400 border border-slate-800 hover:border-rose-900/40 transition-all cursor-pointer animate-pulse"
+                              title={lang === 'tr' ? 'Kaydı durdur ve şimdiye kadar kaydedilen kısmı video olarak kaydet' : 'Stop recording and finalize the recorded file'}
+                            >
+                              <Square className="w-3.5 h-3.5 fill-rose-500 text-rose-500" />
+                            </button>
+                          )}
+
                           {/* Server-side transcode button */}
                           {video.status === 'completed' && !video.isTranscoded && video.transcodeStatus !== 'processing' && (
                             <button

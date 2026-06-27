@@ -4,7 +4,8 @@ import { PlayerSettings, DiagnosticsData, Language } from '../types';
 import { translations } from '../utils/translations';
 import { 
   Play, Pause, Volume2, VolumeX, SkipBack, 
-  RotateCcw, Sliders, Cpu, HardDrive, Maximize2, Minimize2
+  RotateCcw, Sliders, Cpu, HardDrive, Maximize2, Minimize2,
+  Loader2, AlertCircle
 } from 'lucide-react';
 
 interface CanvasPlayerProps {
@@ -13,6 +14,7 @@ interface CanvasPlayerProps {
   setSettings: React.Dispatch<React.SetStateAction<PlayerSettings>>;
   lang: Language;
   onUpdateDiagnostics: (data: DiagnosticsData) => void;
+  activeVideoId?: string | null;
 }
 
 export default function CanvasPlayer({ 
@@ -20,7 +22,8 @@ export default function CanvasPlayer({
   settings, 
   setSettings, 
   lang, 
-  onUpdateDiagnostics 
+  onUpdateDiagnostics,
+  activeVideoId = null
 }: CanvasPlayerProps) {
   const t = translations[lang];
 
@@ -51,12 +54,111 @@ export default function CanvasPlayer({
   // Object URL for local files
   const [videoSrc, setVideoSrc] = useState<string>('');
 
+  // Local transcoding states
+  const [localTranscodeStatus, setLocalTranscodeStatus] = useState<'idle' | 'processing' | 'completed' | 'failed'>('idle');
+  const [localTranscodeProgress, setLocalTranscodeProgress] = useState(0);
+  const pollIntervalRef = useRef<any>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
+  }, []);
+
+  const handleStartLocalTranscode = async () => {
+    if (!activeVideoId) return;
+    setLocalTranscodeStatus('processing');
+    setLocalTranscodeProgress(0);
+    try {
+      const response = await fetch(`/api/videos/transcode/${activeVideoId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          targetFps: 30,
+          targetScale: "1280:720" // 720p is beautiful and plays smoothly on all systems
+        })
+      });
+      if (response.ok) {
+        startPollingTranscode();
+      } else {
+        setLocalTranscodeStatus('failed');
+        setVideoError(lang === 'tr' ? 'Dönüştürme başlatılamadı.' : 'Failed to start transcoding.');
+      }
+    } catch (e) {
+      setLocalTranscodeStatus('failed');
+      setVideoError(lang === 'tr' ? 'Dönüştürme hatası oluştu.' : 'Transcoding error occurred.');
+    }
+  };
+
+  const startPollingTranscode = () => {
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        const res = await fetch('/api/videos');
+        if (res.ok) {
+          const videos = await res.json();
+          const currentVideo = videos.find((v: any) => v.id === activeVideoId);
+          if (currentVideo) {
+            if (currentVideo.transcodeStatus === 'processing') {
+              setLocalTranscodeStatus('processing');
+              setLocalTranscodeProgress(currentVideo.transcodeProgress || 0);
+            } else if (currentVideo.transcodeStatus === 'completed' || currentVideo.isTranscoded) {
+              setLocalTranscodeStatus('completed');
+              setLocalTranscodeProgress(100);
+              if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+              
+              // Success! Clear video error and reload the video element with a cache buster
+              setVideoError(null);
+              setLocalTranscodeStatus('idle');
+              setVideoLoaded(false);
+              
+              const buster = `?t=${Date.now()}`;
+              const baseSrc = videoSrc.split('?')[0];
+              setVideoSrc(`${baseSrc}${buster}`);
+              
+              if (videoRef.current) {
+                videoRef.current.load();
+                videoRef.current.play().catch(() => {});
+              }
+            } else if (currentVideo.transcodeStatus === 'failed') {
+              setLocalTranscodeStatus('failed');
+              if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+              setVideoError(lang === 'tr' 
+                ? `Dönüştürme başarısız oldu: ${currentVideo.error || 'Bilinmeyen hata'}` 
+                : `Transcoding failed: ${currentVideo.error || 'Unknown error'}`);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Error polling transcode status:", err);
+      }
+    }, 1500);
+  };
+
   useEffect(() => {
     let url = '';
     if (file instanceof File) {
       url = URL.createObjectURL(file);
     } else if (typeof file === 'string') {
-      url = file;
+      const lowercase = file.toLowerCase();
+      const isDirect = lowercase.includes('huggingface.co') || 
+                       lowercase.endsWith('.mp4') || 
+                       lowercase.endsWith('.webm') || 
+                       lowercase.endsWith('.mkv') || 
+                       lowercase.endsWith('.mov') || 
+                       lowercase.endsWith('.avi') || 
+                       lowercase.endsWith('.3gp') || 
+                       lowercase.endsWith('.m4v');
+      
+      // If it is a direct link, proxy it to guarantee CORS-compliant same-origin playback
+      if (isDirect && file.startsWith('http') && !file.includes('/api/video-stream') && !file.includes('/api/proxy-stream')) {
+        url = `/api/proxy-stream?url=${encodeURIComponent(file)}`;
+      } else {
+        url = file;
+      }
     }
     setVideoSrc(url);
     setVideoLoaded(false);
@@ -534,10 +636,14 @@ export default function CanvasPlayer({
           onLoadedMetadata={handleLoadedMetadata}
           onError={() => {
             if (videoSrc && !(videoSrc.includes('.m3u8') || videoSrc.includes('m3u8'))) {
-              setVideoError(lang === 'tr' ? 'Video formatı bu tarayıcıda açılamıyor.' : 'Video format is not supported by this browser.');
+              const mediaError = videoRef.current?.error;
+              let errMsg = lang === 'tr' ? 'Video formatı bu tarayıcıda açılamıyor.' : 'Video format is not supported by this browser.';
+              if (mediaError) {
+                errMsg += ` (Code: ${mediaError.code}, Message: ${mediaError.message || 'unknown'})`;
+              }
+              setVideoError(errMsg);
             }
           }}
-          crossOrigin="anonymous"
           playsInline
         />
 
@@ -607,11 +713,65 @@ export default function CanvasPlayer({
 
         {/* Error overlay */}
         {videoError && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-center px-4">
-            <div className="bg-rose-500/10 p-3 rounded-full border border-rose-500/20 text-rose-400 mb-3">
-              <RotateCcw className="w-6 h-6 animate-spin-reverse" />
-            </div>
-            <p className="text-sm font-sans font-medium text-rose-400">{videoError}</p>
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 text-center px-6 py-4 overflow-y-auto z-20">
+            {localTranscodeStatus === 'processing' ? (
+              <div className="flex flex-col items-center justify-center max-w-md animate-in fade-in duration-300">
+                <div className="bg-amber-500/10 p-3.5 rounded-full border border-amber-500/25 text-amber-400 mb-4">
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                </div>
+                <h4 className="text-sm font-bold font-display text-amber-400 mb-1">
+                  {lang === 'tr' ? 'Video Dönüştürülüyor...' : 'Transcoding Video...'}
+                </h4>
+                <p className="text-[11px] text-slate-400 mb-4 leading-relaxed">
+                  {lang === 'tr' 
+                    ? 'Tarayıcınızın donmadan oynatabilmesi için video sunucuda standart H.264 Baseline formatına dönüştürülüyor. Lütfen bekleyin...' 
+                    : 'The video is being converted on our server to standard H.264 Baseline format so your browser can play it smoothly. Please wait...'}
+                </p>
+                <div className="w-full bg-slate-900 rounded-full h-2 overflow-hidden mb-2 border border-slate-800">
+                  <div 
+                    className="bg-amber-500 h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${localTranscodeProgress}%` }}
+                  ></div>
+                </div>
+                <span className="font-mono text-xs font-bold text-amber-400">
+                  {localTranscodeProgress}%
+                </span>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center max-w-lg animate-in fade-in duration-300">
+                <div className="bg-rose-500/10 p-3.5 rounded-full border border-rose-500/25 text-rose-400 mb-3">
+                  <AlertCircle className="w-6 h-6 animate-pulse" />
+                </div>
+                <h4 className="text-sm font-bold font-display text-rose-400 mb-1.5">
+                  {lang === 'tr' ? 'Oynatma Hatası (Uyumsuz Format/Codec)' : 'Playback Error (Incompatible Format/Codec)'}
+                </h4>
+                <p className="text-[11px] text-slate-300 mb-4 leading-relaxed max-w-md">
+                  {lang === 'tr' 
+                    ? 'Bu video tarayıcınızın doğrudan çözemediği yüksek çözünürlüklü modern bir kodlamaya (örn. 4K AV1) sahip. Sorunu düzeltmek için tek tıkla videoyu sunucumuzda her tarayıcıyla %100 uyumlu Baseline formatına dönüştürebilirsiniz.' 
+                    : 'This video uses a high-res codec (like 4K AV1) that your browser cannot play directly. You can solve this with one click by transcoding it on our server into standard, 100% compatible Baseline format.'}
+                </p>
+                
+                <div className="bg-slate-900 border border-slate-800/60 rounded-xl px-4 py-2.5 mb-5 text-[10px] font-mono text-slate-400 max-w-sm truncate">
+                  {videoError}
+                </div>
+
+                {activeVideoId ? (
+                  <button
+                    onClick={handleStartLocalTranscode}
+                    className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-slate-950 px-5 py-2.5 rounded-xl text-xs font-bold transition-all shadow-md active:scale-95 cursor-pointer font-sans hover:shadow-amber-500/10"
+                  >
+                    <Cpu className="w-4 h-4" />
+                    {lang === 'tr' ? '⚡ Videoyu Sunucuda Dönüştür (Önerilen)' : '⚡ Transcode on Server (Recommended)'}
+                  </button>
+                ) : (
+                  <p className="text-[10px] text-slate-500 italic font-sans">
+                    {lang === 'tr' 
+                      ? 'İndirilen videoları dönüştürmek için lütfen sağdaki "Sunucuya İndir" seçeneğiyle ekleyin.' 
+                      : 'Please add the video using "Download & Cache" on the right to enable server-side conversion.'}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         )}
 

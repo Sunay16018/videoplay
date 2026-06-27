@@ -36,4 +36,6 @@ export interface CachedVideo {
   transcodeProgress?: number;
   originalSize?: number;
   isLive?: boolean;
+  isLiveDownload?: boolean;
+  recordedDuration?: number;
 }

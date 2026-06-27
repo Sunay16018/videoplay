@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import { Readable } from "stream";
+import { spawn } from "child_process";
 import { createServer as createViteServer } from "vite";
 
 function cleanYoutubeUrl(url: string): string {
@@ -109,6 +110,8 @@ interface CachedVideo {
   transcodeProgress?: number;
   originalSize?: number;
   isLive?: boolean;
+  isLiveDownload?: boolean;
+  recordedDuration?: number;
 }
 
 async function startServer() {
@@ -146,7 +149,7 @@ async function startServer() {
   }
 
   // Active download streams so we can cancel them if deleted
-  const activeDownloads = new Map<string, { controller?: AbortController; fileStream?: fs.WriteStream }>();
+  const activeDownloads = new Map<string, { controller?: AbortController; fileStream?: fs.WriteStream; ffmpegProcess?: any }>();
 
   // Helper to extract YouTube info via oEmbed
   async function getYoutubeMetadata(videoUrl: string) {
@@ -381,8 +384,8 @@ async function startServer() {
     }
 
     try {
-      // If it is a live stream or requested as live/instant, save immediately without background download
-      if (isLive || url.includes(".m3u8") || url.includes("/live/") || url.includes("youtube.com/live")) {
+      // If it is requested as live/instant, save immediately without background download
+      if (isLive) {
         const metadata = loadMetadata();
         const newVideo: CachedVideo = {
           id,
@@ -415,6 +418,100 @@ async function startServer() {
           return res.status(502).json({ error: "Could not extract stream. Video might be restricted, copyright protected, or Cobalt API is busy." });
         }
         streamUrl = resolved;
+      }
+
+      const isLiveUrl = url.includes(".m3u8") || url.includes("/live/") || url.includes("youtube.com/live");
+      const isHlsOrLive = streamUrl.includes(".m3u8") || streamUrl.includes(".mpd") || isLiveUrl;
+
+      if (isHlsOrLive) {
+        const metadata = loadMetadata();
+        const displayTitle = `[Canlı Kayıt] ${info.title}`;
+        const newVideo: CachedVideo = {
+          id,
+          url: cleanedUrl,
+          streamUrl,
+          title: displayTitle,
+          thumbnail: info.thumbnail || "https://images.unsplash.com/photo-1526698905402-e1a019a38641?w=120&q=80",
+          status: "downloading",
+          progress: 0,
+          totalSize: 0,
+          downloadedSize: 0,
+          quality: quality || "max",
+          addedAt: Date.now(),
+          isLiveDownload: true
+        };
+
+        metadata[id] = newVideo;
+        saveMetadata(metadata);
+
+        res.json(newVideo);
+
+        // Spawn FFmpeg recording
+        (async () => {
+          const ffmpegArgs = [
+            "-y",
+            "-headers", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n",
+            "-i", streamUrl,
+            "-c", "copy",
+            "-bsf:a", "aac_adtstoasc",
+            videoPath
+          ];
+
+          console.log(`[FFmpeg Live Record] Starting for id: ${id}, args: ${ffmpegArgs.join(" ")}`);
+          const ffmpegProcess = spawn("ffmpeg", ffmpegArgs);
+
+          activeDownloads.set(id, { ffmpegProcess });
+
+          let recordedSeconds = 0;
+          let lastSavedTime = 0;
+
+          ffmpegProcess.stderr.on("data", (data: Buffer) => {
+            const str = data.toString();
+            const match = str.match(/time=(\d+):(\d+):(\d+\.\d+)/);
+            if (match) {
+              const hrs = parseInt(match[1], 10);
+              const mins = parseInt(match[2], 10);
+              const secs = parseFloat(match[3]);
+              recordedSeconds = hrs * 3600 + mins * 60 + secs;
+
+              const now = Date.now();
+              if (now - lastSavedTime > 2000) {
+                lastSavedTime = now;
+                const currentMeta = loadMetadata();
+                if (currentMeta[id]) {
+                  currentMeta[id].downloadedSize = fs.existsSync(videoPath) ? fs.statSync(videoPath).size : 0;
+                  currentMeta[id].recordedDuration = recordedSeconds;
+                  currentMeta[id].progress = Math.min(Math.round(recordedSeconds / 60), 100);
+                  saveMetadata(currentMeta);
+                }
+              }
+            }
+          });
+
+          ffmpegProcess.on("close", (code: number) => {
+            console.log(`[FFmpeg Live Record] Stopped with exit code ${code} for id: ${id}`);
+            activeDownloads.delete(id);
+
+            const finalMeta = loadMetadata();
+            if (finalMeta[id]) {
+              const fileExists = fs.existsSync(videoPath);
+              const fileSize = fileExists ? fs.statSync(videoPath).size : 0;
+              if (fileExists && fileSize > 1000) {
+                finalMeta[id].status = "completed";
+                finalMeta[id].progress = 100;
+                finalMeta[id].totalSize = fileSize;
+                finalMeta[id].downloadedSize = fileSize;
+                finalMeta[id].recordedDuration = recordedSeconds;
+              } else {
+                finalMeta[id].status = "failed";
+                finalMeta[id].error = "FFmpeg recording stopped or failed.";
+              }
+              saveMetadata(finalMeta);
+            }
+          });
+        })();
+
+        return;
       }
 
       const metadata = loadMetadata();
@@ -547,8 +644,14 @@ async function startServer() {
     // Abort active download stream if any
     const active = activeDownloads.get(id);
     if (active) {
-      active.controller?.abort();
-      active.fileStream?.end();
+      if (active.ffmpegProcess) {
+        try {
+          active.ffmpegProcess.kill("SIGKILL");
+        } catch (_) {}
+      } else {
+        active.controller?.abort();
+        active.fileStream?.end();
+      }
       activeDownloads.delete(id);
     }
 
@@ -579,6 +682,26 @@ async function startServer() {
     }
 
     res.json({ success: true });
+  });
+
+  // 3a. POST - Gracefully stop active live stream recording
+  app.post("/api/videos/stop-recording/:id", (req, res) => {
+    const { id } = req.params;
+    const active = activeDownloads.get(id);
+
+    if (active && active.ffmpegProcess) {
+      console.log(`[FFmpeg Stop Recording] Gracefully stopping live stream recording for id: ${id}`);
+      try {
+        // Send SIGINT to let ffmpeg close output MP4 correctly and write MOOV atom
+        active.ffmpegProcess.kill("SIGINT");
+        return res.json({ success: true, message: "Recording stop requested." });
+      } catch (err: any) {
+        console.error(`Failed to stop ffmpeg gracefully for ${id}:`, err);
+        return res.status(500).json({ error: `Could not stop recording gracefully: ${err.message}` });
+      }
+    }
+
+    return res.status(404).json({ error: "No active live recording session found for this video." });
   });
 
   // 3b. POST - Transcode downloaded video to super low-overhead Baseline MP4 (Server-side E1-1200 CPU Saver Mode)
@@ -697,8 +820,10 @@ async function startServer() {
     let videoPath = path.join(DOWNLOADS_DIR, `${id}.mp4`);
     const transcodedPath = path.join(DOWNLOADS_DIR, `${id}-transcoded.mp4`);
 
+    let isTranscoded = false;
     if (fs.existsSync(transcodedPath)) {
       videoPath = transcodedPath;
+      isTranscoded = true;
     }
 
     if (!fs.existsSync(videoPath)) {
@@ -708,48 +833,24 @@ async function startServer() {
     // Get true content-type from metadata
     const metadata = loadMetadata();
     const videoMeta = metadata[id];
-    const contentType = videoMeta?.contentType || "video/mp4";
-
-    // Standard video streaming headers with support for growing files
-    const stat = fs.statSync(videoPath);
-    const fileSize = stat.size;
-    const range = req.headers.range;
-
-    if (range) {
-      const parts = range.replace(/bytes=/, "").split("-");
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-
-      if (start >= fileSize) {
-        res.status(416).send("Requested range not satisfiable\n" + start + " >= " + fileSize);
-        return;
-      }
-
-      const chunksize = (end - start) + 1;
-      const file = fs.createReadStream(videoPath, { start, end });
-      const head = {
-        "Content-Range": `bytes ${start}-${end}/${fileSize}`,
-        "Accept-Ranges": "bytes",
-        "Content-Length": chunksize,
-        "Content-Type": contentType,
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "Range",
-      };
-
-      res.writeHead(206, head);
-      file.pipe(res);
-    } else {
-      const head = {
-        "Content-Length": fileSize,
-        "Content-Type": contentType,
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "Range",
-      };
-      res.writeHead(200, head);
-      fs.createReadStream(videoPath).pipe(res);
+    let contentType = isTranscoded ? "video/mp4" : (videoMeta?.contentType || "video/mp4");
+    if (contentType === "application/octet-stream" || contentType === "binary/octet-stream" || !contentType.startsWith("video/")) {
+      contentType = "video/mp4";
     }
+
+    // Set CORS and streaming headers
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Range");
+    res.setHeader("Content-Type", contentType);
+
+    res.sendFile(videoPath, {
+      headers: {
+        "Accept-Ranges": "bytes",
+        "Access-Control-Allow-Origin": "*",
+        "Content-Type": contentType
+      }
+    });
   });
 
   // 5. GET - Proxy stream direct from Cobalt (handles direct progressive play with proper CORS and codecs)
@@ -798,8 +899,12 @@ async function startServer() {
         }
       });
 
-      // Default content type if missing
-      if (!responseHeaders["content-type"]) {
+      // Default content type if missing or generic
+      const currentContentType = responseHeaders["content-type"] as string;
+      if (!currentContentType || 
+          currentContentType === "application/octet-stream" || 
+          currentContentType === "binary/octet-stream" || 
+          !currentContentType.startsWith("video/")) {
         responseHeaders["content-type"] = "video/mp4";
       }
 
